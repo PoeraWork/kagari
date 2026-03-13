@@ -36,16 +36,16 @@
 - `/Users/poera/Project/Poera/uds_mcp/main.py` — 重构为启动入口，仅做依赖装配与服务启动
 - `/Users/poera/Project/Poera/uds_mcp/pyproject.toml` — 增补官方 Python MCP SDK `mcp`（建议 `mcp[cli]`）、CAN后端、日志导出、测试工具依赖
 - `/Users/poera/Project/Poera/uds_mcp/README.md` — 增加架构说明、流程DSL说明、运行/调试/导出指南
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/server.py` — MCP工具注册与请求路由
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/can/interface.py` — 基于 `python-can` 的统一CAN接口封装（设备差异由 `python-can` 处理）
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/can/config.py` — `bustype/channel/bitrate` 等CAN配置与校验
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/uds/client.py` — UDS请求/响应封装与超时策略
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/flow/schema.py` — YAML DSL模型与校验
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/flow/engine.py` — 流程状态机、执行器、断点与注入控制
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/extensions/runtime.py` — Python扩展函数加载与沙箱执行
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/logging/store.py` — 统一日志写入与检索
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/logging/exporters/blf.py` — BLF导出实现
-- `/Users/poera/Project/Poera/uds_mcp/src/uds_mcp/models/events.py` — CAN/UDS/流程事件统一数据模型
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/server.py` — MCP工具注册与请求路由
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/can/interface.py` — 基于 `python-can` 的统一CAN接口封装（设备差异由 `python-can` 处理）
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/can/config.py` — `bustype/channel/bitrate` 等CAN配置与校验
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/uds/client.py` — UDS请求/响应封装与超时策略
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/flow/schema.py` — YAML DSL模型与校验
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/flow/engine.py` — 流程状态机、执行器、断点与注入控制
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/extensions/runtime.py` — Python扩展函数加载与沙箱执行
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/logging/store.py` — 统一日志写入与检索
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/logging/exporters/blf.py` — BLF导出实现
+- `/Users/poera/Project/Poera/uds_mcp/uds_mcp/models/events.py` — CAN/UDS/流程事件统一数据模型
 
 **Verification**
 1. 启动验证：在本地通过 MCP 客户端调用 `can.send`、`uds.send` 并确认返回与日志入库一致。
