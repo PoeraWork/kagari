@@ -6,6 +6,8 @@ bitrate = 500000
 [uds]
 tx_physical_id = 0x7E0
 rx_physical_id = 0x7E8
+tx_functional_id = 0x7DF
+rx_functional_id = 0x7E8
 
 [app]
 flow_repo = "./examples/flows"

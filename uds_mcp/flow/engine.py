@@ -142,49 +142,69 @@ class FlowEngine:
     async def _run_flow(self, run: FlowRun, flow: FlowDefinition) -> None:
         variables = dict(flow.variables)
         previous_response_hex: str | None = None
+        flow_owner_active = False
         try:
+            if flow.tester_present_policy == "during_flow":
+                await self._uds_client.start_tester_present_owner("flow-run")
+                flow_owner_active = True
+
             for step in flow.steps:
+                step_owner_active = False
+                flow_owner_suspended = False
                 if run.stop_requested:
                     run.status = FlowStatus.STOPPED
                     self._log_state(run)
                     return
 
-                run.current_step = step.name
-                if step.breakpoint:
-                    run.status = FlowStatus.PAUSED
-                    self._log_state(run)
-                    run.pause_event.clear()
-                    await self._uds_client.ensure_tester_present()
-                    await run.pause_event.wait()
-                    await self._uds_client.stop_tester_present()
-                    run.status = FlowStatus.RUNNING
-                    self._log_state(run)
+                if step.tester_present == "on":
+                    await self._uds_client.start_tester_present_owner("flow-step")
+                    step_owner_active = True
+                elif step.tester_present == "off" and flow_owner_active:
+                    await self._uds_client.stop_tester_present_owner("flow-run")
+                    flow_owner_suspended = True
 
-                request_hex = step.send
-                if step.before_hook:
-                    request_hex = self._apply_hook(
-                        step.before_hook.script_path,
-                        step.before_hook.function_name,
-                        step.before_hook.snippet,
-                        request_hex,
-                        previous_response_hex,
-                        variables,
-                    )
+                try:
+                    run.current_step = step.name
+                    if step.breakpoint:
+                        run.status = FlowStatus.PAUSED
+                        self._log_state(run)
+                        run.pause_event.clear()
+                        await self._uds_client.ensure_tester_present()
+                        await run.pause_event.wait()
+                        await self._uds_client.stop_tester_present()
+                        run.status = FlowStatus.RUNNING
+                        self._log_state(run)
 
-                response = await self._uds_client.send(request_hex, timeout_ms=step.timeout_ms)
-                response_hex = str(response["response_hex"])
-
-                if step.expect and step.expect.response_prefix:
-                    expected = step.expect.response_prefix.upper()
-                    if not response_hex.startswith(expected):
-                        raise ValueError(
-                            f"step {step.name}: expect prefix {expected}, got {response_hex}"
+                    request_hex = step.send
+                    if step.before_hook:
+                        request_hex = self._apply_hook(
+                            step.before_hook.script_path,
+                            step.before_hook.function_name,
+                            step.before_hook.snippet,
+                            request_hex,
+                            previous_response_hex,
+                            variables,
                         )
 
-                item = {"step": step.name, "request_hex": request_hex, "response_hex": response_hex}
-                run.trace.append(item)
-                self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
-                previous_response_hex = response_hex
+                    response = await self._uds_client.send(request_hex, timeout_ms=step.timeout_ms)
+                    response_hex = str(response["response_hex"])
+
+                    if step.expect and step.expect.response_prefix:
+                        expected = step.expect.response_prefix.upper()
+                        if not response_hex.startswith(expected):
+                            raise ValueError(
+                                f"step {step.name}: expect prefix {expected}, got {response_hex}"
+                            )
+
+                    item = {"step": step.name, "request_hex": request_hex, "response_hex": response_hex}
+                    run.trace.append(item)
+                    self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+                    previous_response_hex = response_hex
+                finally:
+                    if step_owner_active:
+                        await self._uds_client.stop_tester_present_owner("flow-step")
+                    if flow_owner_suspended:
+                        await self._uds_client.start_tester_present_owner("flow-run")
 
             run.status = FlowStatus.DONE
             self._log_state(run)
@@ -203,6 +223,9 @@ class FlowEngine:
                 )
             )
             self._log_state(run)
+        finally:
+            if flow_owner_active:
+                await self._uds_client.stop_tester_present_owner("flow-run")
 
     def _apply_hook(
         self,

@@ -10,7 +10,12 @@ def test_app_config_from_toml_dict() -> None:
     cfg = AppConfig.from_toml_dict(
         {
             "can": {"interface": "virtual", "channel": "ch-1", "bitrate": 250000},
-            "uds": {"tx_physical_id": 0x700, "rx_physical_id": 0x708},
+            "uds": {
+                "tx_physical_id": 0x700,
+                "rx_physical_id": 0x708,
+                "tx_functional_id": 0x7DF,
+                "rx_functional_id": 0x7E9,
+            },
             "app": {
                 "flow_repo": "./flows2",
                 "extension_whitelist": "./extensions2",
@@ -24,6 +29,8 @@ def test_app_config_from_toml_dict() -> None:
     assert cfg.can_bitrate == 250000
     assert cfg.uds_tx_id == 0x700
     assert cfg.uds_rx_id == 0x708
+    assert cfg.uds_tx_id_functional == 0x7DF
+    assert cfg.uds_rx_id_functional == 0x7E9
     assert cfg.flow_repo == Path("./flows2")
     assert cfg.extension_whitelist == Path("./extensions2")
     assert cfg.tester_present_interval_sec == 1.5
@@ -36,6 +43,8 @@ def test_app_config_to_toml_roundtrip() -> None:
         can_bitrate=500000,
         uds_tx_id=0x7E0,
         uds_rx_id=0x7E8,
+        uds_tx_id_functional=0x7DF,
+        uds_rx_id_functional=0x7E8,
         flow_repo=Path("./flows"),
         extension_whitelist=Path("./extensions"),
         tester_present_interval_sec=2.0,
@@ -48,6 +57,8 @@ def test_app_config_to_toml_roundtrip() -> None:
     assert parsed["can"]["bitrate"] == 500000
     assert parsed["uds"]["tx_physical_id"] == 0x7E0
     assert parsed["uds"]["rx_physical_id"] == 0x7E8
+    assert parsed["uds"]["tx_functional_id"] == 0x7DF
+    assert parsed["uds"]["rx_functional_id"] == 0x7E8
 
 
 def test_load_config_prefers_toml(monkeypatch, tmp_path: Path) -> None:
@@ -62,6 +73,8 @@ bitrate = 500000
 [uds]
 tx_physical_id = 0x701
 rx_physical_id = 0x709
+tx_functional_id = 0x7df
+rx_functional_id = 0x7ea
 
 [app]
 flow_repo = "./flows"
@@ -78,6 +91,8 @@ tester_present_interval_sec = 2.0
     assert cfg.can_interface == "virtual"
     assert cfg.can_channel == "runtime-1"
     assert cfg.uds_tx_id == 0x701
+    assert cfg.uds_tx_id_functional == 0x7DF
+    assert cfg.uds_rx_id_functional == 0x7EA
     assert source == str(path)
 
 
@@ -86,10 +101,14 @@ def test_load_config_fallback_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("UDS_MCP_CAN_INTERFACE", "virtual")
     monkeypatch.setenv("UDS_MCP_CAN_CHANNEL", "env-channel")
     monkeypatch.setenv("UDS_MCP_CAN_BITRATE", "250000")
+    monkeypatch.setenv("UDS_MCP_UDS_TX_FUNCTIONAL_ID", "0x7DF")
+    monkeypatch.setenv("UDS_MCP_UDS_RX_FUNCTIONAL_ID", "0x7EA")
 
     cfg, source = load_config()
 
     assert cfg.can_interface == "virtual"
     assert cfg.can_channel == "env-channel"
     assert cfg.can_bitrate == 250000
+    assert cfg.uds_tx_id_functional == 0x7DF
+    assert cfg.uds_rx_id_functional == 0x7EA
     assert source == "env"

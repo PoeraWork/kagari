@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -23,12 +23,14 @@ class FlowStep(BaseModel):
     timeout_ms: int = 1000
     expect: StepExpect | None = None
     breakpoint: bool = False
+    tester_present: Literal["inherit", "on", "off"] = "inherit"
     before_hook: HookConfig | None = None
 
 
 class FlowDefinition(BaseModel):
     name: str
     version: str = "1.0"
+    tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only"
     variables: dict[str, Any] = Field(default_factory=dict)
     steps: list[FlowStep]
 

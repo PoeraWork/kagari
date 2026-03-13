@@ -1,17 +1,20 @@
 name: demo_virtual_can_flow
 version: "1.0"
+tester_present_policy: breakpoint_only
 variables:
   did: F190
 steps:
   - name: enter_extended_session
     send: "1003"
     timeout_ms: 1200
+    tester_present: inherit
     expect:
       response_prefix: "5003"
 
   - name: read_did_dynamic
     send: "22F190"
     timeout_ms: 1200
+    tester_present: inherit
     expect:
       response_prefix: "62F190"
     before_hook:

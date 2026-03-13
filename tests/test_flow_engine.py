@@ -11,6 +11,9 @@ from uds_mcp.logging.store import EventStore
 
 
 class _FakeUdsClient:
+    def __init__(self) -> None:
+        self.tp_events: list[tuple[str, str]] = []
+
     async def send(self, request_hex: str, timeout_ms: int = 1000) -> dict[str, object]:
         del timeout_ms
         request_hex = request_hex.upper()
@@ -33,6 +36,26 @@ class _FakeUdsClient:
 
     async def stop_tester_present(self) -> None:
         return None
+
+    async def start_tester_present_owner(
+        self, owner: str, *, addressing_mode: str = "physical"
+    ) -> dict[str, object]:
+        self.tp_events.append(("start", owner))
+        return {
+            "running": True,
+            "addressing_mode": addressing_mode,
+            "owners": [owner],
+            "interval_sec": 1.0,
+        }
+
+    async def stop_tester_present_owner(self, owner: str) -> dict[str, object]:
+        self.tp_events.append(("stop", owner))
+        return {
+            "running": False,
+            "addressing_mode": None,
+            "owners": [],
+            "interval_sec": 1.0,
+        }
 
 
 async def _wait_run_done(engine: FlowEngine, run_id: str) -> dict[str, Any]:
@@ -90,5 +113,76 @@ def test_before_hook_can_read_previous_response_and_write_variables() -> None:
         assert final["status"] == FlowStatus.DONE.value
         assert final["trace"][1]["request_hex"] == "2712ABCD"
         assert final["trace"][2]["request_hex"] == "22ABCD"
+
+    asyncio.run(_run())
+
+
+def test_tester_present_policy_during_flow_with_step_off() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="tp_policy_flow",
+            tester_present_policy="during_flow",
+            steps=[
+                {
+                    "name": "normal_step",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                },
+                {
+                    "name": "tp_off_step",
+                    "send": "2711",
+                    "tester_present": "off",
+                    "expect": {"response_prefix": "6711"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert uds.tp_events == [
+            ("start", "flow-run"),
+            ("stop", "flow-run"),
+            ("start", "flow-run"),
+            ("stop", "flow-run"),
+        ]
+
+    asyncio.run(_run())
+
+
+def test_tester_present_step_on_when_policy_off() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="tp_step_on_flow",
+            tester_present_policy="off",
+            steps=[
+                {
+                    "name": "tp_on_step",
+                    "send": "2711",
+                    "tester_present": "on",
+                    "expect": {"response_prefix": "6711"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert uds.tp_events == [
+            ("start", "flow-step"),
+            ("stop", "flow-step"),
+        ]
 
     asyncio.run(_run())

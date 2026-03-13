@@ -118,7 +118,13 @@ async def main() -> None:
     )
     uds_client = UdsClientService(
         can_interface,
-        UdsConfig(tx_id=demo.tx_id, rx_id=demo.rx_id, tester_present_interval_sec=1.0),
+        UdsConfig(
+            tx_id=demo.tx_id,
+            rx_id=demo.rx_id,
+            tx_functional_id=0x7DF,
+            rx_functional_id=demo.rx_id,
+            tester_present_interval_sec=1.0,
+        ),
         event_store,
     )
 

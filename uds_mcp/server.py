@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -49,6 +49,8 @@ class AppState:
             UdsConfig(
                 tx_id=config.uds_tx_id,
                 rx_id=config.uds_rx_id,
+                tx_functional_id=config.uds_tx_id_functional,
+                rx_functional_id=config.uds_rx_id_functional,
                 tester_present_interval_sec=config.tester_present_interval_sec,
             ),
             self.event_store,
@@ -86,6 +88,8 @@ class AppState:
         can_bitrate: int | None = None,
         uds_tx_id: int | None = None,
         uds_rx_id: int | None = None,
+        uds_tx_id_functional: int | None = None,
+        uds_rx_id_functional: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
         tester_present_interval_sec: float | None = None,
@@ -97,6 +101,16 @@ class AppState:
             can_bitrate=can_bitrate if can_bitrate is not None else self.config.can_bitrate,
             uds_tx_id=uds_tx_id if uds_tx_id is not None else self.config.uds_tx_id,
             uds_rx_id=uds_rx_id if uds_rx_id is not None else self.config.uds_rx_id,
+            uds_tx_id_functional=(
+                uds_tx_id_functional
+                if uds_tx_id_functional is not None
+                else self.config.uds_tx_id_functional
+            ),
+            uds_rx_id_functional=(
+                uds_rx_id_functional
+                if uds_rx_id_functional is not None
+                else self.config.uds_rx_id_functional
+            ),
             flow_repo=Path(flow_repo) if flow_repo is not None else self.config.flow_repo,
             extension_whitelist=(
                 Path(extension_whitelist)
@@ -160,8 +174,35 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         return {"ok": True, "channel": state.config.can_channel}
 
     @mcp.tool(description="Send one UDS request and wait for response.")
-    async def uds_send(request_hex: str, timeout_ms: int = 1000) -> dict[str, object]:
-        return await state.uds.send(request_hex, timeout_ms=timeout_ms)
+    async def uds_send(
+        request_hex: str,
+        timeout_ms: int = 1000,
+        addressing_mode: Literal["physical", "functional"] = "physical",
+    ) -> dict[str, object]:
+        return await state.uds.send(
+            request_hex,
+            timeout_ms=timeout_ms,
+            addressing_mode=addressing_mode,
+        )
+
+    @mcp.tool(description="Start periodic TesterPresent with physical or functional addressing.")
+    async def tester_present_start(
+        addressing_mode: Literal["physical", "functional"] = "physical",
+    ) -> dict[str, object]:
+        status = await state.uds.start_manual_tester_present(addressing_mode=addressing_mode)
+        return {"ok": True, **status}
+
+    @mcp.tool(
+        description="Stop manual TesterPresent owner (flow breakpoint owner stays independent)."
+    )
+    async def tester_present_stop() -> dict[str, object]:
+        status = await state.uds.stop_manual_tester_present()
+        return {"ok": True, **status}
+
+    @mcp.tool(description="Get current TesterPresent runtime state and owners.")
+    async def tester_present_status() -> dict[str, object]:
+        status = await state.uds.tester_present_status()
+        return {"ok": True, **status}
 
     @mcp.tool(description="Compute AES-CMAC for hex input and return uppercase hex output.")
     def crypto_aes_cmac(key_hex: str, data_hex: str, out_len: int = 16) -> dict[str, object]:
@@ -221,6 +262,8 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         preset: str = "session_did_read",
         path: str | None = None,
         include_dynamic_hook: bool = True,
+        tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only",
+        default_step_tester_present: Literal["inherit", "on", "off"] = "inherit",
         overwrite: bool = False,
         register: bool = False,
     ) -> dict[str, object]:
@@ -229,6 +272,8 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             flow_name,
             preset=preset,
             include_dynamic_hook=include_dynamic_hook,
+            tester_present_policy=tester_present_policy,
+            default_step_tester_present=default_step_tester_present,
             path=target,
             overwrite=overwrite,
         )
@@ -327,6 +372,8 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         can_bitrate: int | None = None,
         uds_tx_id: int | None = None,
         uds_rx_id: int | None = None,
+        uds_tx_id_functional: int | None = None,
+        uds_rx_id_functional: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
         tester_present_interval_sec: float | None = None,
@@ -337,6 +384,8 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             can_bitrate=can_bitrate,
             uds_tx_id=uds_tx_id,
             uds_rx_id=uds_rx_id,
+            uds_tx_id_functional=uds_tx_id_functional,
+            uds_rx_id_functional=uds_rx_id_functional,
             flow_repo=flow_repo,
             extension_whitelist=extension_whitelist,
             tester_present_interval_sec=tester_present_interval_sec,

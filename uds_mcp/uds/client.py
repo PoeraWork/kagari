@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from threading import Lock
+from typing import Literal
 
 from uds.addressing import AddressingType
 from uds.can import CanAddressingFormat, CanAddressingInformation, PyCanTransportInterface
@@ -18,6 +19,8 @@ from uds_mcp.models.events import EventKind, LogEvent
 class UdsConfig:
     tx_id: int
     rx_id: int
+    tx_functional_id: int
+    rx_functional_id: int
     tester_present_interval_sec: float = 2.0
 
 
@@ -40,28 +43,61 @@ class UdsClientService:
             addressing_format=CanAddressingFormat.NORMAL_ADDRESSING,
             rx_physical_params={"can_id": self._config.rx_id},
             tx_physical_params={"can_id": self._config.tx_id},
-            rx_functional_params={"can_id": self._config.rx_id},
-            tx_functional_params={"can_id": self._config.tx_id},
+            rx_functional_params={"can_id": self._config.rx_functional_id},
+            tx_functional_params={"can_id": self._config.tx_functional_id},
         )
         self._transport = PyCanTransportInterface(
             network_manager=bus,
             addressing_information=addressing_information,
         )
         self._client = Client(transport_interface=self._transport)
+        self._tester_present_owners: set[str] = set()
+        self._tester_present_mode: AddressingType | None = None
 
-    async def send(self, request_hex: str, timeout_ms: int = 1000) -> dict[str, object]:
+    async def send(
+        self,
+        request_hex: str,
+        timeout_ms: int = 1000,
+        *,
+        addressing_mode: Literal["physical", "functional"] = "physical",
+    ) -> dict[str, object]:
         payload = bytes.fromhex(request_hex)
-        return await asyncio.to_thread(self._send_sync, payload, timeout_ms)
+        return await asyncio.to_thread(self._send_sync, payload, timeout_ms, addressing_mode)
 
     async def ensure_tester_present(self) -> None:
-        await asyncio.to_thread(self._start_tester_present_sync)
+        await self.start_tester_present_owner("flow-breakpoint", addressing_mode="physical")
 
     async def stop_tester_present(self) -> None:
-        await asyncio.to_thread(self._stop_tester_present_sync)
+        await self.stop_tester_present_owner("flow-breakpoint")
 
-    def _send_sync(self, payload: bytes, timeout_ms: int) -> dict[str, object]:
+    async def start_tester_present_owner(
+        self,
+        owner: str,
+        *,
+        addressing_mode: Literal["physical", "functional"] = "physical",
+    ) -> dict[str, object]:
+        return await asyncio.to_thread(self._acquire_tester_present_sync, owner, addressing_mode)
+
+    async def stop_tester_present_owner(self, owner: str) -> dict[str, object]:
+        return await asyncio.to_thread(self._release_tester_present_sync, owner)
+
+    async def start_manual_tester_present(
+        self,
+        *,
+        addressing_mode: Literal["physical", "functional"] = "physical",
+    ) -> dict[str, object]:
+        return await self.start_tester_present_owner("manual", addressing_mode=addressing_mode)
+
+    async def stop_manual_tester_present(self) -> dict[str, object]:
+        return await self.stop_tester_present_owner("manual")
+
+    async def tester_present_status(self) -> dict[str, object]:
+        return await asyncio.to_thread(self._tester_present_status_sync)
+
+    def _send_sync(self, payload: bytes, timeout_ms: int, addressing_mode: str) -> dict[str, object]:
+        addressing_type = _parse_addressing_mode(addressing_mode)
         with self._client_lock:
-            request = UdsMessage(payload=payload, addressing_type=AddressingType.PHYSICAL)
+            request = UdsMessage(payload=payload, addressing_type=addressing_type)
             previous_timeouts = (
                 self._client.p2_client_timeout,
                 self._client.p2_ext_client_timeout,
@@ -97,6 +133,7 @@ class UdsClientService:
             "request_hex": payload.hex().upper(),
             "response_hex": response_hex,
             "response_id": response_id,
+            "addressing_mode": addressing_mode,
         }
 
     def _log_uds_exchange(
@@ -149,15 +186,54 @@ class UdsClientService:
                     )
                 )
 
-    def _start_tester_present_sync(self) -> None:
+    def _acquire_tester_present_sync(self, owner: str, addressing_mode: str) -> dict[str, object]:
+        requested = _parse_addressing_mode(addressing_mode)
         with self._client_lock:
-            if self._client.is_tester_present_sent:
-                return
-            self._client.s3_client = self._config.tester_present_interval_sec * 1000.0
-            self._client.start_tester_present(addressing_type=AddressingType.PHYSICAL, sprmib=True)
+            self._tester_present_owners.add(owner)
 
-    def _stop_tester_present_sync(self) -> None:
+            if self._client.is_tester_present_sent:
+                active_mode = self._tester_present_mode or AddressingType.PHYSICAL
+                return self._tester_present_status_payload(active_mode)
+
+            self._client.s3_client = self._config.tester_present_interval_sec * 1000.0
+            self._client.start_tester_present(addressing_type=requested, sprmib=True)
+            self._tester_present_mode = requested
+            return self._tester_present_status_payload(requested)
+
+    def _release_tester_present_sync(self, owner: str) -> dict[str, object]:
         with self._client_lock:
-            if not self._client.is_tester_present_sent:
-                return
-            self._client.stop_tester_present()
+            self._tester_present_owners.discard(owner)
+
+            if self._tester_present_owners:
+                active_mode = self._tester_present_mode or AddressingType.PHYSICAL
+                return self._tester_present_status_payload(active_mode)
+
+            if self._client.is_tester_present_sent:
+                self._client.stop_tester_present()
+            self._tester_present_mode = None
+            return self._tester_present_status_payload(None)
+
+    def _tester_present_status_sync(self) -> dict[str, object]:
+        with self._client_lock:
+            mode = self._tester_present_mode if self._client.is_tester_present_sent else None
+            return self._tester_present_status_payload(mode)
+
+    def _tester_present_status_payload(self, mode: AddressingType | None) -> dict[str, object]:
+        mode_label = None
+        if mode is not None:
+            mode_label = "functional" if mode == AddressingType.FUNCTIONAL else "physical"
+        return {
+            "running": bool(self._client.is_tester_present_sent),
+            "addressing_mode": mode_label,
+            "owners": sorted(self._tester_present_owners),
+            "interval_sec": self._config.tester_present_interval_sec,
+        }
+
+
+def _parse_addressing_mode(value: str) -> AddressingType:
+    normalized = value.strip().lower()
+    if normalized == "physical":
+        return AddressingType.PHYSICAL
+    if normalized == "functional":
+        return AddressingType.FUNCTIONAL
+    raise ValueError("addressing_mode must be 'physical' or 'functional'")

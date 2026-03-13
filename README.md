@@ -67,6 +67,8 @@ Used as fallback only when `uds.toml` is absent.
 - `UDS_MCP_CAN_BITRATE` default: `500000`
 - `UDS_MCP_UDS_TX_ID` default: `0x7E0`
 - `UDS_MCP_UDS_RX_ID` default: `0x7E8`
+- `UDS_MCP_UDS_TX_FUNCTIONAL_ID` default: `0x7DF`
+- `UDS_MCP_UDS_RX_FUNCTIONAL_ID` default: `0x7E8`
 - `UDS_MCP_FLOW_REPO` default: `./flows`
 - `UDS_MCP_EXTENSION_WHITELIST` default: `./extensions`
 - `UDS_MCP_TESTER_PRESENT_INTERVAL` default: `2.0`
@@ -77,6 +79,9 @@ Used as fallback only when `uds.toml` is absent.
 - `can_tail`
 - `can_restart`
 - `uds_send`
+- `tester_present_start`
+- `tester_present_stop`
+- `tester_present_status`
 - `crypto_aes_cmac`
 - `security27_build_key`
 - `flow_load`
@@ -115,6 +120,41 @@ result = {
 		"request_hex": "2712" + seed,
 		"variables": {"seed": seed},
 }
+```
+
+## UDS Addressing And TesterPresent
+
+- `uds_send` supports `addressing_mode`: `physical` (default) or `functional`.
+- `tester_present_start(addressing_mode=...)` and `tester_present_stop()` are available for manual control.
+- Flow breakpoint pause uses an internal TesterPresent owner and no longer conflicts with manual start/stop.
+- `tester_present_status()` reports whether periodic sending is running, current addressing mode, and active owners.
+
+## Flow-Level TesterPresent Policy
+
+Flow YAML supports `tester_present_policy` with default `breakpoint_only`:
+
+- `breakpoint_only`: only keepalive while paused on breakpoint (backward-compatible behavior).
+- `during_flow`: keep keepalive active for full flow run.
+- `off`: no automatic keepalive at flow level.
+
+Each step can override with `tester_present`:
+
+- `inherit` (default)
+- `on` (enable keepalive for this step)
+- `off` (disable flow-level keepalive for this step)
+
+Example:
+
+```yaml
+name: security_access_flow
+tester_present_policy: during_flow
+steps:
+	- name: request_seed
+		send: "2711"
+		tester_present: inherit
+	- name: send_key_without_tp
+		send: "2712ABCD"
+		tester_present: off
 ```
 
 ## SecurityAccess Helpers

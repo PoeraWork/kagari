@@ -15,6 +15,8 @@ class AppConfig:
     can_bitrate: int = 500000
     uds_tx_id: int = 0x7E0
     uds_rx_id: int = 0x7E8
+    uds_tx_id_functional: int = 0x7DF
+    uds_rx_id_functional: int = 0x7E8
     flow_repo: Path = Path("./flows")
     extension_whitelist: Path = Path("./extensions")
     tester_present_interval_sec: float = 2.0
@@ -27,6 +29,14 @@ class AppConfig:
             can_bitrate=int(os.getenv("UDS_MCP_CAN_BITRATE", "500000")),
             uds_tx_id=int(os.getenv("UDS_MCP_UDS_TX_ID", "0x7E0"), 0),
             uds_rx_id=int(os.getenv("UDS_MCP_UDS_RX_ID", "0x7E8"), 0),
+            uds_tx_id_functional=int(
+                os.getenv("UDS_MCP_UDS_TX_FUNCTIONAL_ID", "0x7DF"),
+                0,
+            ),
+            uds_rx_id_functional=int(
+                os.getenv("UDS_MCP_UDS_RX_FUNCTIONAL_ID", "0x7E8"),
+                0,
+            ),
             flow_repo=Path(os.getenv("UDS_MCP_FLOW_REPO", "./flows")),
             extension_whitelist=Path(os.getenv("UDS_MCP_EXTENSION_WHITELIST", "./extensions")),
             tester_present_interval_sec=float(os.getenv("UDS_MCP_TESTER_PRESENT_INTERVAL", "2.0")),
@@ -61,6 +71,8 @@ class AppConfig:
             can_bitrate=int(can_table.get("bitrate", 500000)),
             uds_tx_id=int(uds_table.get("tx_physical_id", 0x7E0)),
             uds_rx_id=int(uds_table.get("rx_physical_id", 0x7E8)),
+            uds_tx_id_functional=int(uds_table.get("tx_functional_id", 0x7DF)),
+            uds_rx_id_functional=int(uds_table.get("rx_functional_id", 0x7E8)),
             flow_repo=Path(str(app_table.get("flow_repo", "./flows"))),
             extension_whitelist=Path(str(app_table.get("extension_whitelist", "./extensions"))),
             tester_present_interval_sec=float(app_table.get("tester_present_interval_sec", 2.0)),
@@ -75,6 +87,8 @@ class AppConfig:
             "[uds]\n"
             f"tx_physical_id = {hex(self.uds_tx_id)}\n"
             f"rx_physical_id = {hex(self.uds_rx_id)}\n\n"
+            f"tx_functional_id = {hex(self.uds_tx_id_functional)}\n"
+            f"rx_functional_id = {hex(self.uds_rx_id_functional)}\n\n"
             "[app]\n"
             f"flow_repo = {self.flow_repo.as_posix()!r}\n"
             f"extension_whitelist = {self.extension_whitelist.as_posix()!r}\n"
@@ -91,6 +105,8 @@ class AppConfig:
             "uds": {
                 "tx_physical_id": self.uds_tx_id,
                 "rx_physical_id": self.uds_rx_id,
+                "tx_functional_id": self.uds_tx_id_functional,
+                "rx_functional_id": self.uds_rx_id_functional,
             },
             "app": {
                 "flow_repo": self.flow_repo.as_posix(),
