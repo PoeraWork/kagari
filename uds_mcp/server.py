@@ -151,7 +151,17 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         "uds-mcp",
         instructions=(
             "UDS MCP server backed by py-uds and python-can. "
-            "Supports CAN/UDS send, flow orchestration, breakpoints, injection, and BLF export."
+            "Supports CAN/UDS send, flow orchestration, breakpoints, injection, and BLF export. "
+            "Flow hooks: before_hook (request shaping), message_hook (per UDS message), "
+            "after_hook (response/variables updates). "
+            "Hook context includes request_hex/response_hex/variables/read-only trace, and for "
+            "message_hook also message_index/message_total/step_name. "
+            "Hook outputs can include request_hex, request_sequence_hex(list[str]), response_hex, "
+            "variables, and transfer segments from segments_hook. "
+            "transfer_data uses standardized segments(address+data_hex) with optional "
+            "segments_hook for dynamic generation. Import in hook sandbox is denied "
+            "by default and can be enabled "
+            "with extension_import_whitelist config."
         ),
         json_response=True,
     )
@@ -267,6 +277,59 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
     @mcp.tool(description="List available starter presets for flow initialization.")
     def flow_template_presets() -> list[str]:
         return list_flow_presets()
+
+    @mcp.tool(description="Return flow DSL and hook capability reference for AI/tooling discovery.")
+    def flow_capabilities() -> dict[str, object]:
+        return {
+            "hooks": {
+                "before_hook": {
+                    "purpose": "modify step request before sending",
+                    "context": ["request_hex", "response_hex", "variables", "trace"],
+                    "outputs": ["request_hex", "request_sequence_hex", "variables"],
+                },
+                "message_hook": {
+                    "purpose": "modify each generated UDS message in a step",
+                    "context": [
+                        "request_hex",
+                        "response_hex",
+                        "variables",
+                        "trace",
+                        "message_index",
+                        "message_total",
+                        "step_name",
+                    ],
+                    "outputs": ["request_hex", "request_sequence_hex", "variables"],
+                },
+                "after_hook": {
+                    "purpose": "modify final response / update variables after send",
+                    "context": ["request_hex", "response_hex", "variables", "trace"],
+                    "outputs": ["response_hex", "variables"],
+                },
+                "segments_hook": {
+                    "purpose": "dynamically produce transfer_data segments",
+                    "context": ["variables", "trace", "step_name", "transfer_data"],
+                    "outputs": ["segments", "variables"],
+                },
+            },
+            "transfer_data": {
+                "model": {
+                    "segments": [{"address": "int", "data_hex": "str"}],
+                    "chunk_size": "int>=1",
+                    "block_counter_start": "0..255",
+                    "request_prefix_hex": "default '36'",
+                    "segments_hook": "optional HookConfig",
+                },
+                "notes": [
+                    "Prefer parsing OEM-specific files in external trusted tools.",
+                    "Flow consumes standardized segments only.",
+                ],
+            },
+            "import_sandbox": {
+                "default": "import denied",
+                "config": "extension_import_whitelist",
+                "runtime_update": "config_update(extension_import_whitelist=[...])",
+            },
+        }
 
     @mcp.tool(description="Create a starter flow template and optionally write it to YAML.")
     def flow_init_template(
