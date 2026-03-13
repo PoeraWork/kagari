@@ -28,6 +28,7 @@ class TransferDataConfig(BaseModel):
     chunk_size: int = 256
     block_counter_start: int = 1
     request_prefix_hex: str = "36"
+    check_each_response: bool = True
 
     @model_validator(mode="after")
     def _validate_source(self) -> TransferDataConfig:

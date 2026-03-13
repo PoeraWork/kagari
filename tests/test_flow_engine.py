@@ -23,6 +23,8 @@ class _FakeUdsClient:
             response_hex = "6712"
         elif request_hex == "22ABCD":
             response_hex = "62ABCD00"
+        elif request_hex.endswith("BAD0"):
+            response_hex = "7F3673"
         elif request_hex.startswith("36") and len(request_hex) >= 4:
             response_hex = f"76{request_hex[2:]}"
         else:
@@ -375,6 +377,93 @@ def test_transfer_data_segments_hook_can_generate_segments() -> None:
         assert final["status"] == FlowStatus.DONE.value
         requests = [item["request_hex"] for item in final["trace"]]
         assert requests == ["3601AA", "3602BB", "3603CC"]
+
+    asyncio.run(_run())
+
+
+def test_transfer_data_fails_fast_on_unexpected_response_by_default() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="transfer_data_fail_fast",
+            steps=[
+                {
+                    "name": "transfer_payload",
+                    "transfer_data": {
+                        "segments": [{"address": 0x1000, "data_hex": "AABBCC"}],
+                        "chunk_size": 1,
+                        "block_counter_start": 1,
+                    },
+                    "message_hook": {
+                        "snippet": (
+                            'if context["message_index"] == 1:\n'
+                            '    result = {"request_hex": "3602BAD0"}\n'
+                            'else:\n'
+                            '    result = {}\n'
+                        )
+                    },
+                    "expect": {"response_prefix": "76"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.FAILED.value
+        assert "transfer_data expect prefix 76" in str(final["error"])
+
+    asyncio.run(_run())
+
+
+def test_transfer_data_can_disable_per_message_check_for_negative_hook_logic() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="transfer_data_negative_by_hook",
+            steps=[
+                {
+                    "name": "transfer_payload",
+                    "transfer_data": {
+                        "segments": [{"address": 0x1000, "data_hex": "AABBCC"}],
+                        "chunk_size": 1,
+                        "block_counter_start": 1,
+                        "check_each_response": False,
+                    },
+                    "message_hook": {
+                        "snippet": (
+                            'if context["message_index"] == 1:\n'
+                            '    result = {"request_hex": "3602BAD0"}\n'
+                            'else:\n'
+                            '    result = {}\n'
+                        )
+                    },
+                    "after_hook": {
+                        "snippet": (
+                            'curr = list(context["trace"])\n'
+                            'seen_negative = any(t["response_hex"].startswith("7F") for t in curr)\n'
+                            'if not seen_negative:\n'
+                            '    raise ValueError("expected negative response in transfer_data")\n'
+                            'result = {}\n'
+                        )
+                    },
+                    "expect": {"response_prefix": "76"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        requests = [item["request_hex"] for item in final["trace"]]
+        assert requests == ["3601AA", "3602BAD0", "3603CC"]
 
     asyncio.run(_run())
 

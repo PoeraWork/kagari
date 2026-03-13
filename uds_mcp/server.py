@@ -159,7 +159,8 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             "Hook outputs can include request_hex, request_sequence_hex(list[str]), response_hex, "
             "variables, and transfer segments from segments_hook. "
             "transfer_data uses standardized segments(address+data_hex) with optional "
-            "segments_hook for dynamic generation. Hook runtime uses full Python "
+            "segments_hook for dynamic generation, and check_each_response for per-block "
+            "expect checking policy. Hook runtime uses full Python "
             "imports/builtins; users are responsible for hook code safety."
         ),
         json_response=True,
@@ -339,6 +340,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                     "chunk_size": "int>=1",
                     "block_counter_start": "0..255",
                     "request_prefix_hex": "default '36'",
+                    "check_each_response": "default true; true=fail-fast each block, false=final-only",
                     "segments_hook": "optional HookConfig",
                 },
                 "notes": [

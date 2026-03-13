@@ -208,6 +208,15 @@ class FlowEngine:
                             flow_path,
                         )
 
+                    expected_prefix = None
+                    if step.expect and step.expect.response_prefix:
+                        expected_prefix = step.expect.response_prefix.upper()
+                    check_each_response = (
+                        step.transfer_data is not None
+                        and step.transfer_data.check_each_response
+                        and expected_prefix is not None
+                    )
+
                     response_hex = ""
                     sent_count = 0
                     for base_index, request_hex in enumerate(request_sequence):
@@ -242,6 +251,14 @@ class FlowEngine:
                             run.trace.append(item)
                             self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
                             previous_response_hex = response_hex
+
+                            if check_each_response and not response_hex.startswith(expected_prefix):
+                                raise ValueError(
+                                    "step "
+                                    f"{step.name}: transfer_data expect prefix {expected_prefix}, "
+                                    f"got {response_hex} at request_index {sent_count}"
+                                )
+
                             sent_count += 1
 
                     if step.after_hook:
@@ -257,11 +274,10 @@ class FlowEngine:
                             flow_path,
                         )
 
-                    if step.expect and step.expect.response_prefix:
-                        expected = step.expect.response_prefix.upper()
-                        if not response_hex.startswith(expected):
+                    if expected_prefix is not None and not check_each_response:
+                        if not response_hex.startswith(expected_prefix):
                             raise ValueError(
-                                f"step {step.name}: expect prefix {expected}, got {response_hex}"
+                                f"step {step.name}: expect prefix {expected_prefix}, got {response_hex}"
                             )
                 finally:
                     if step_owner_active:

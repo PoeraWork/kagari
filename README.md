@@ -158,6 +158,7 @@ steps:
 					data_hex: "CCDD"
 			chunk_size: 1
 			block_counter_start: 1
+			check_each_response: true
 ```
 
 Dynamic segments via Python hook (avoids huge YAML payloads):
@@ -183,6 +184,11 @@ steps:
 
 `message_hook` context includes `message_index`, `message_total`, `step_name`, `request_hex`,
 `response_hex`, `variables`, and read-only `trace`.
+
+`transfer_data.check_each_response` defaults to `true`:
+
+- `true`: each 0x36 response is checked against `expect.response_prefix` immediately (fail-fast).
+- `false`: only final response is checked by `expect`; use hooks to assert negative-path expectations.
 
 Relative `script_path` values in flow YAML are resolved against the YAML file directory.
 When a flow is loaded from YAML, `variables` keys ending with `_path` are also resolved against
