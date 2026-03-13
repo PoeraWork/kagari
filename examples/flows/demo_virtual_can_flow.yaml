@@ -18,5 +18,5 @@ steps:
     expect:
       response_prefix: "62F190"
     before_hook:
-      script_path: "examples/extensions/dynamic_payload.py"
+      script_path: "../extensions/dynamic_payload.py"
       function_name: "build_request"

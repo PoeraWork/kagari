@@ -51,7 +51,7 @@ def create_flow_template(
     )
     if include_dynamic_hook:
         step_with_hook.before_hook = HookConfig(
-            script_path="examples/extensions/dynamic_payload.py",
+            script_path="../extensions/dynamic_payload.py",
             function_name="build_request",
         )
 

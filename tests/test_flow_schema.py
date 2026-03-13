@@ -62,3 +62,25 @@ def test_transfer_data_allows_segments_hook_without_segments() -> None:
         ],
     )
     assert flow.steps[0].transfer_data is not None
+
+
+def test_load_flow_yaml_resolves_hook_path_relative_to_yaml_file(tmp_path: Path) -> None:
+    flow_path = tmp_path / "flows" / "demo.yaml"
+    flow_path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_text = "\n".join(
+        [
+            "name: demo_relative",
+            "steps:",
+            "  - name: s1",
+            '    send: "1003"',
+            "    before_hook:",
+            '      script_path: "../extensions/demo_hook.py"',
+            '      function_name: "build"',
+        ]
+    )
+    flow_path.write_text(yaml_text + "\n", encoding="utf-8")
+
+    loaded = load_flow_yaml(flow_path)
+    hook = loaded.steps[0].before_hook
+    assert hook is not None
+    assert hook.script_path == str((tmp_path / "extensions" / "demo_hook.py").resolve())

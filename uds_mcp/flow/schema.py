@@ -69,10 +69,28 @@ class FlowDefinition(BaseModel):
 
 def load_flow_yaml(path: Path) -> FlowDefinition:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return FlowDefinition.model_validate(data)
+    flow = FlowDefinition.model_validate(data)
+    base_dir = path.resolve().parent
+    for step in flow.steps:
+        _resolve_hook_script_path(step.before_hook, base_dir)
+        _resolve_hook_script_path(step.message_hook, base_dir)
+        _resolve_hook_script_path(step.after_hook, base_dir)
+        if step.transfer_data is not None:
+            _resolve_hook_script_path(step.transfer_data.segments_hook, base_dir)
+    return flow
 
 
 def dump_flow_yaml(path: Path, flow: FlowDefinition) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = flow.model_dump(mode="json")
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=False), encoding="utf-8")
+
+
+def _resolve_hook_script_path(hook: HookConfig | None, base_dir: Path) -> None:
+    if hook is None or hook.script_path is None:
+        return
+    target = Path(hook.script_path)
+    if target.is_absolute():
+        hook.script_path = str(target.resolve())
+        return
+    hook.script_path = str((base_dir / target).resolve())

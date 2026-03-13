@@ -184,6 +184,8 @@ steps:
 `message_hook` context includes `message_index`, `message_total`, `step_name`, `request_hex`,
 `response_hex`, `variables`, and read-only `trace`.
 
+Relative `script_path` values in flow YAML are resolved against the YAML file directory.
+
 `after_hook` is also supported per step. It receives current `request_hex`, current `response_hex`,
 `variables`, and read-only `trace`. Hook output can include:
 

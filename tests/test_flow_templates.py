@@ -20,7 +20,7 @@ def test_create_flow_template_session_did_read() -> None:
     assert flow.steps[0].name == "enter_extended_session"
     assert flow.steps[0].tester_present == "inherit"
     assert flow.steps[1].before_hook is not None
-    assert flow.steps[1].before_hook.script_path == "examples/extensions/dynamic_payload.py"
+    assert flow.steps[1].before_hook.script_path == "../extensions/dynamic_payload.py"
 
 
 def test_create_flow_template_without_hook() -> None:
