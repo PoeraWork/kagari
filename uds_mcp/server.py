@@ -283,7 +283,14 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             "hooks": {
                 "before_hook": {
                     "purpose": "modify step request before sending",
-                    "context": ["request_hex", "response_hex", "variables", "trace"],
+                    "context": [
+                        "request_hex",
+                        "response_hex",
+                        "variables",
+                        "trace",
+                        "flow_dir",
+                        "flow_path",
+                    ],
                     "outputs": ["request_hex", "request_sequence_hex", "variables"],
                 },
                 "message_hook": {
@@ -296,17 +303,33 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                         "message_index",
                         "message_total",
                         "step_name",
+                        "flow_dir",
+                        "flow_path",
                     ],
                     "outputs": ["request_hex", "request_sequence_hex", "variables"],
                 },
                 "after_hook": {
                     "purpose": "modify final response / update variables after send",
-                    "context": ["request_hex", "response_hex", "variables", "trace"],
+                    "context": [
+                        "request_hex",
+                        "response_hex",
+                        "variables",
+                        "trace",
+                        "flow_dir",
+                        "flow_path",
+                    ],
                     "outputs": ["response_hex", "variables"],
                 },
                 "segments_hook": {
                     "purpose": "dynamically produce transfer_data segments",
-                    "context": ["variables", "trace", "step_name", "transfer_data"],
+                    "context": [
+                        "variables",
+                        "trace",
+                        "step_name",
+                        "transfer_data",
+                        "flow_dir",
+                        "flow_path",
+                    ],
                     "outputs": ["segments", "variables"],
                 },
             },

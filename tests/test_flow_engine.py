@@ -377,3 +377,56 @@ def test_transfer_data_segments_hook_can_generate_segments() -> None:
         assert requests == ["3601AA", "3602BB", "3603CC"]
 
     asyncio.run(_run())
+
+
+def test_flow_variables_path_keys_resolve_relative_to_yaml_dir(tmp_path: Path) -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([tmp_path.resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flows_dir = tmp_path / "flows"
+        data_dir = tmp_path / "data"
+        flows_dir.mkdir(parents=True, exist_ok=True)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "sbl.s19").write_text("S0TEST\n", encoding="utf-8")
+
+        flow_path = flows_dir / "path_vars.yaml"
+        flow_path.write_text(
+            "\n".join(
+                [
+                    "name: path_vars_demo",
+                    "variables:",
+                    '  sbl_s19_path: "../data/sbl.s19"',
+                    "steps:",
+                    "  - name: request_seed",
+                    '    send: "2711"',
+                    "    before_hook:",
+                    '      snippet: |',
+                    '        v = dict(context["variables"])',
+                    '        v["resolved_path"] = v["sbl_s19_path"]',
+                    '        result = {"variables": v}',
+                    '    expect:',
+                    '      response_prefix: "6711"',
+                    "  - name: check_abs_path",
+                    '    send: "2711"',
+                    "    before_hook:",
+                    '      snippet: |',
+                    '        import os',
+                    '        req = "22ABCD" if os.path.isabs(context["variables"]["resolved_path"]) else "2711"',
+                    '        result = {"request_hex": req}',
+                    '    expect:',
+                    '      response_prefix: "62ABCD"',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        loaded = engine.load(flow_path)
+        run_id = await engine.start(loaded.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert final["trace"][1]["request_hex"] == "22ABCD"
+
+    asyncio.run(_run())

@@ -53,6 +53,7 @@ class FlowEngine:
         self._event_store = event_store
         self._runtime = runtime
         self._flows: dict[str, FlowDefinition] = {}
+        self._flow_sources: dict[str, Path] = {}
         self._runs: dict[str, FlowRun] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -62,6 +63,7 @@ class FlowEngine:
     def load(self, path: Path) -> FlowDefinition:
         flow = load_flow_yaml(path)
         self.register(flow)
+        self._flow_sources[flow.name] = path.resolve()
         return flow
 
     def save(self, flow_name: str, path: Path) -> None:
@@ -148,7 +150,9 @@ class FlowEngine:
         return await self._uds_client.send(request_hex, timeout_ms=timeout_ms)
 
     async def _run_flow(self, run: FlowRun, flow: FlowDefinition) -> None:
-        variables = dict(flow.variables)
+        flow_path = self._flow_sources.get(flow.name)
+        flow_dir = flow_path.parent if flow_path is not None else Path.cwd().resolve()
+        variables = _resolve_flow_variables(flow.variables, flow_dir=flow_dir)
         previous_response_hex: str | None = None
         flow_owner_active = False
         try:
@@ -183,7 +187,13 @@ class FlowEngine:
                         run.status = FlowStatus.RUNNING
                         self._log_state(run)
 
-                    request_sequence = self._build_step_request_sequence(step, variables, run.trace)
+                    request_sequence = self._build_step_request_sequence(
+                        step,
+                        variables,
+                        run.trace,
+                        flow_dir,
+                        flow_path,
+                    )
                     base_request_hex = request_sequence[0]
                     if step.before_hook:
                         request_sequence = self._apply_before_hook(
@@ -194,6 +204,8 @@ class FlowEngine:
                             previous_response_hex,
                             variables,
                             run.trace,
+                            flow_dir,
+                            flow_path,
                         )
 
                     response_hex = ""
@@ -209,6 +221,8 @@ class FlowEngine:
                                 previous_response_hex,
                                 variables,
                                 run.trace,
+                                flow_dir,
+                                flow_path,
                                 message_index=base_index,
                                 message_total=len(request_sequence),
                                 step_name=step.name,
@@ -239,6 +253,8 @@ class FlowEngine:
                             response_hex,
                             variables,
                             run.trace,
+                            flow_dir,
+                            flow_path,
                         )
 
                     if step.expect and step.expect.response_prefix:
@@ -283,6 +299,8 @@ class FlowEngine:
         response_hex: str | None,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
+        flow_dir: Path,
+        flow_path: Path | None,
     ) -> list[str]:
         context_variables = dict(variables)
         context = self._build_hook_context(
@@ -290,6 +308,8 @@ class FlowEngine:
             response_hex=response_hex,
             variables=context_variables,
             trace=trace,
+            flow_dir=flow_dir,
+            flow_path=flow_path,
         )
         updates = self._run_hook(script_path, function_name, snippet, context)
 
@@ -318,6 +338,8 @@ class FlowEngine:
         response_hex: str | None,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
+        flow_dir: Path,
+        flow_path: Path | None,
         *,
         message_index: int,
         message_total: int,
@@ -329,6 +351,8 @@ class FlowEngine:
             response_hex=response_hex,
             variables=context_variables,
             trace=trace,
+            flow_dir=flow_dir,
+            flow_path=flow_path,
             message_index=message_index,
             message_total=message_total,
             step_name=step_name,
@@ -360,6 +384,8 @@ class FlowEngine:
         response_hex: str,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
+        flow_dir: Path,
+        flow_path: Path | None,
     ) -> str:
         context_variables = dict(variables)
         context = self._build_hook_context(
@@ -367,6 +393,8 @@ class FlowEngine:
             response_hex=response_hex,
             variables=context_variables,
             trace=trace,
+            flow_dir=flow_dir,
+            flow_path=flow_path,
         )
         updates = self._run_hook(script_path, function_name, snippet, context)
 
@@ -402,6 +430,8 @@ class FlowEngine:
         response_hex: str | None,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
+        flow_dir: Path,
+        flow_path: Path | None,
         message_index: int | None = None,
         message_total: int | None = None,
         step_name: str | None = None,
@@ -411,6 +441,8 @@ class FlowEngine:
             "response_hex": response_hex,
             "variables": variables,
             "trace": _readonly_trace(trace),
+            "flow_dir": str(flow_dir),
+            "flow_path": str(flow_path) if flow_path is not None else None,
         }
         if message_index is not None:
             context["message_index"] = message_index
@@ -453,6 +485,8 @@ class FlowEngine:
         step: FlowStep,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
+        flow_dir: Path,
+        flow_path: Path | None,
     ) -> list[str]:
         if step.transfer_data is None:
             if step.send is None:
@@ -462,7 +496,14 @@ class FlowEngine:
         cfg = step.transfer_data
         segments = list(cfg.segments)
         if cfg.segments_hook is not None:
-            segments = self._resolve_transfer_segments_from_hook(step.name, cfg, variables, trace)
+            segments = self._resolve_transfer_segments_from_hook(
+                step.name,
+                cfg,
+                variables,
+                trace,
+                flow_dir,
+                flow_path,
+            )
 
         prefix = _normalize_hex(cfg.request_prefix_hex, field_name="request_prefix_hex").upper()
         if len(prefix) != 2:
@@ -489,6 +530,8 @@ class FlowEngine:
         cfg: TransferDataConfig,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
+        flow_dir: Path,
+        flow_path: Path | None,
     ) -> list[TransferSegment]:
         hook = cfg.segments_hook
         if hook is None:
@@ -500,6 +543,8 @@ class FlowEngine:
             response_hex=None,
             variables=context_variables,
             trace=trace,
+            flow_dir=flow_dir,
+            flow_path=flow_path,
             step_name=step_name,
         )
         context["transfer_data"] = {
@@ -557,3 +602,18 @@ def _normalize_hex(value: str, *, field_name: str) -> str:
     except ValueError as exc:
         raise ValueError(f"{field_name} is not valid hex") from exc
     return normalized
+
+
+def _resolve_flow_variables(values: dict[str, Any], *, flow_dir: Path) -> dict[str, Any]:
+    resolved = dict(values)
+    for key, value in list(resolved.items()):
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        if not key.endswith("_path"):
+            continue
+        path_value = Path(value)
+        if path_value.is_absolute():
+            resolved[key] = str(path_value.resolve())
+            continue
+        resolved[key] = str((flow_dir / path_value).resolve())
+    return resolved

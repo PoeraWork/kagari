@@ -185,6 +185,13 @@ steps:
 `response_hex`, `variables`, and read-only `trace`.
 
 Relative `script_path` values in flow YAML are resolved against the YAML file directory.
+When a flow is loaded from YAML, `variables` keys ending with `_path` are also resolved against
+the YAML file directory before hook execution.
+
+Hook context also provides:
+
+- `flow_dir`: absolute directory of loaded flow YAML.
+- `flow_path`: absolute file path of loaded flow YAML (or `null` if flow was registered inline).
 
 `after_hook` is also supported per step. It receives current `request_hex`, current `response_hex`,
 `variables`, and read-only `trace`. Hook output can include:
