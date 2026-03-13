@@ -170,6 +170,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
     def can_send(
         arbitration_id: int,
         data_hex: str,
+        *,
         is_extended_id: bool = False,
     ) -> dict[str, Any]:
         state.can.send_frame(arbitration_id, bytes.fromhex(data_hex), is_extended_id=is_extended_id)
@@ -239,6 +240,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         level: int,
         seed_hex: str,
         key_hex: str,
+        *,
         out_len: int | None = None,
         include_level_in_cmac: bool = False,
     ) -> dict[str, object]:
@@ -361,6 +363,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         flow_name: str,
         preset: str = "session_did_read",
         path: str | None = None,
+        *,
         include_dynamic_hook: bool = True,
         tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only",
         default_step_tester_present: Literal["inherit", "on", "off"] = "inherit",
@@ -409,8 +412,10 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         return {"ok": True}
 
     @mcp.tool(description="Enable or disable a breakpoint on a flow step.")
-    def flow_breakpoint(flow_name: str, step_name: str, enabled: bool = True) -> dict[str, object]:
-        state.flow_engine.set_breakpoint(flow_name, step_name, enabled)
+    def flow_breakpoint(
+        flow_name: str, step_name: str, *, enabled: bool = True
+    ) -> dict[str, object]:
+        state.flow_engine.set_breakpoint(flow_name, step_name, enabled=enabled)
         return {"ok": True}
 
     @mcp.tool(description="Patch a flow step send/expect fields at runtime.")

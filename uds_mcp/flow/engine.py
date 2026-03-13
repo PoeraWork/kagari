@@ -6,20 +6,23 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.schema import (
     FlowDefinition,
     FlowStep,
-    TransferSegment,
+    StepExpect,
     TransferDataConfig,
+    TransferSegment,
     dump_flow_yaml,
     load_flow_yaml,
 )
-from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind, LogEvent
-from uds_mcp.uds.client import UdsClientService
+
+if TYPE_CHECKING:
+    from uds_mcp.extensions.runtime import ExtensionRuntime
+    from uds_mcp.logging.store import EventStore
+    from uds_mcp.uds.client import UdsClientService
 
 
 class FlowStatus(StrEnum):
@@ -115,7 +118,7 @@ class FlowEngine:
         run = self._runs[run_id]
         run.pause_event.set()
 
-    def set_breakpoint(self, flow_name: str, step_name: str, enabled: bool) -> None:
+    def set_breakpoint(self, flow_name: str, step_name: str, *, enabled: bool) -> None:
         flow = self._flows[flow_name]
         for step in flow.steps:
             if step.name == step_name:
@@ -139,8 +142,6 @@ class FlowEngine:
                 step.send = send_hex
             if expect_prefix is not None:
                 if step.expect is None:
-                    from uds_mcp.flow.schema import StepExpect
-
                     step.expect = StepExpect()
                 step.expect.response_prefix = expect_prefix
             return
@@ -238,7 +239,9 @@ class FlowEngine:
                             )
 
                         for request_hex in per_message_sequence:
-                            response = await self._uds_client.send(request_hex, timeout_ms=step.timeout_ms)
+                            response = await self._uds_client.send(
+                                request_hex, timeout_ms=step.timeout_ms
+                            )
                             response_hex = str(response["response_hex"])
 
                             item = {
@@ -249,7 +252,9 @@ class FlowEngine:
                                 "request_total": len(request_sequence),
                             }
                             run.trace.append(item)
-                            self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+                            self._event_store.append(
+                                LogEvent(kind=EventKind.FLOW_STEP, payload=item)
+                            )
                             previous_response_hex = response_hex
 
                             if check_each_response and not response_hex.startswith(expected_prefix):
@@ -274,11 +279,14 @@ class FlowEngine:
                             flow_path,
                         )
 
-                    if expected_prefix is not None and not check_each_response:
-                        if not response_hex.startswith(expected_prefix):
-                            raise ValueError(
-                                f"step {step.name}: expect prefix {expected_prefix}, got {response_hex}"
-                            )
+                    if (
+                        expected_prefix is not None
+                        and not check_each_response
+                        and not response_hex.startswith(expected_prefix)
+                    ):
+                        raise ValueError(
+                            f"step {step.name}: expect prefix {expected_prefix}, got {response_hex}"
+                        )
                 finally:
                     if step_owner_active:
                         await self._uds_client.stop_tester_present_owner("flow-step")
@@ -506,7 +514,9 @@ class FlowEngine:
     ) -> list[str]:
         if step.transfer_data is None:
             if step.send is None:
-                raise ValueError(f"step {step.name}: send is required when transfer_data is not set")
+                raise ValueError(
+                    f"step {step.name}: send is required when transfer_data is not set"
+                )
             return [step.send]
 
         cfg = step.transfer_data
@@ -596,9 +606,7 @@ class FlowEngine:
 
 
 def _readonly_trace(trace: list[dict[str, Any]]) -> tuple[MappingProxyType[str, Any], ...]:
-    items: list[MappingProxyType[str, Any]] = []
-    for entry in trace:
-        items.append(MappingProxyType(dict(entry)))
+    items: list[MappingProxyType[str, Any]] = [MappingProxyType(dict(entry)) for entry in trace]
     return tuple(items)
 
 
@@ -609,7 +617,7 @@ def _segment_data_bytes(segment: TransferSegment) -> bytes:
 
 def _normalize_hex(value: str, *, field_name: str) -> str:
     normalized = value.strip().replace(" ", "")
-    if normalized.startswith("0x") or normalized.startswith("0X"):
+    if normalized.startswith(("0x", "0X")):
         normalized = normalized[2:]
     if len(normalized) % 2 != 0:
         raise ValueError(f"{field_name} must contain an even number of hex chars")

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 
 from uds_mcp.flow.schema import FlowDefinition, FlowStep, HookConfig, StepExpect, dump_flow_yaml
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _FLOW_PRESETS = ("minimal", "session_did_read")
 

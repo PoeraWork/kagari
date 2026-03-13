@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from threading import Lock
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from uds.addressing import AddressingType
 from uds.can import CanAddressingFormat, CanAddressingInformation, PyCanTransportInterface
 from uds.client import Client
 from uds.message import UdsMessage, UdsMessageRecord
 
-from uds_mcp.can.interface import CanInterface
-from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind, LogEvent
+
+if TYPE_CHECKING:
+    from uds_mcp.can.interface import CanInterface
+    from uds_mcp.logging.store import EventStore
 
 
 @dataclass(slots=True)
@@ -105,7 +107,9 @@ class UdsClientService:
             if notifier is not None and hasattr(notifier, "stop"):
                 notifier.stop()
 
-    def _send_sync(self, payload: bytes, timeout_ms: int, addressing_mode: str) -> dict[str, object]:
+    def _send_sync(
+        self, payload: bytes, timeout_ms: int, addressing_mode: str
+    ) -> dict[str, object]:
         addressing_type = _parse_addressing_mode(addressing_mode)
         with self._client_lock:
             request = UdsMessage(payload=payload, addressing_type=addressing_type)

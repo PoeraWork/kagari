@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
-from datetime import datetime
 from threading import Lock
+from typing import TYPE_CHECKING
 
-from uds_mcp.models.events import EventKind, LogEvent
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from datetime import datetime
+
+    from uds_mcp.models.events import EventKind, LogEvent
 
 
 class EventStore:

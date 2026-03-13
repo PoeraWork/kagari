@@ -3,7 +3,7 @@ name = "uds-mcp"
 version = "0.1.0"
 description = "UDS MCP server based on py-uds and python-can"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11, <4.0"
 dependencies = [
     "mcp[cli]>=1.26.0",
     "python-can>=4.6.1",
@@ -15,10 +15,8 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-    "pytest>=8.3.0",
-    "ruff>=0.11.0",
-]
+dev = ["ruff>=0.11.0", "basedpyright>=1.32.1"]
+test = ["pytest>=8.3.0", "pytest-cov>=7.0.0", "pytest-xdist>=3.8.0"]
 
 [project.scripts]
 uds-mcp = "uds_mcp.main:main"
@@ -33,11 +31,111 @@ packages = ["uds_mcp"]
 
 [tool.ruff]
 line-length = 100
+indent-width = 4
 target-version = "py311"
+exclude = [".git", ".venv", "__pycache__", "build", "dist", "tests", "examples"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "N",     # PEP8-naming
+    "UP",    # pyupgrade
+    "YTT",   # flake8-2020
+    "ASYNC", # flake8-async
+    "S",     # flake8-bandit
+    "BLE",   # flake8-blind-except
+    "FBT",   # flake8-boolean-trap
+    "B",     # flake8-bugbear
+    "A",     # flake8-builtins
+    "COM",   # flake8-commas
+    "C4",    # flake8-comprehensions
+    "DTZ",   # flake8-datetimez
+    "T10",   # flake8-debugger
+    "FA",    # flake8-future-annotations
+    "ISC",   # flake8-implicit-str-concat
+    "ICN",   # flake8-import-conventions
+    "PIE",   # flake8-pie
+    "T20",   # flake8-print
+    "PYI",   # flake8-pyi
+    "Q",     # flake8-quotes
+    "RSE",   # flake8-raise
+    "RET",   # flake8-return
+    "SLOT",  # flake8-slots
+    "SIM",   # flake8-simplify
+    "TID",   # flake8-tidy-imports
+    "TC",    # flake8-type-checking
+    "ARG",   # flake8-unused-arguments
+    "PTH",   # flake8-use-pathlib
+    # "ERA",   # eradicate
+    "PD",   # pandas-vet
+    "PGH",  # pygrep-hooks
+    "PL",   # pylint
+    "TRY",  # tryceratops
+    "FLY",  # flynt
+    "FAST", # FastAPI
+    "PERF", # Perflint
+    "FURB", # refurb
+    "RUF",  # Ruff-specific rules
+]
+ignore = [
+    "E501",    # 过长的行由 ruff format 处理, 剩余的都是字符串
+    "UP035",   # pyupgrade, 但 typing.Callable 的导入会报错
+    "TRY003",  # 简单异常搞这么复杂
+    "TRY300",  # 和 RET505 冲突了
+    "TRY301",  # 为啥非要把 raise 丢进另外一个 inner fn 里
+    "BLE001",  # except Exception as e
+    "PGH003",  # 要求 `# type: ignore` 提供理由，但 pyright 和 mypy 等都不是统一标准。
+    "PLC0414", # 用 import-as 表示 re-export
+    "N818",    # 要求所有自定义错误以 Error 作后缀，但我们不这么做
+    "RET502",  # return = return None
+    "RET503",  # 就要 implicit return none
+    "PLC0105", # 我们已经用 R 表示协变，Q 表示逆变了
+    "PLR0913", # 参数就那么多的，你用 builder 什么的不是更逆天？
+    "SIM108",  # 迫真 simplicy
+    "RUF009",  # 我不想要额外的全局变量。
+    "RUF003",  # 中文注释里用全角符号怎么你了
+    "SLOT000", # 动态类型需求，主要是 json5 backend
+    "PLR0911",
+    "PLR0912",
+    "PLR0915", # 复杂度高点怎么你了
+    "PYI041",  # int 和 float 在运行时的类型没有交集（互不成立 issubclass）
+    "PLW2901", # shallow 怎么你了
+    "S101",    # assert 怎么你了，非要 RuntimeError 吗
+    "PLR2004", # magic number 怎么你了
+    "TRY004",  # 我要抛啥错误我清楚
+    "COM812",  # 强制尾随逗号
+    "TID252",  # 相对导入
+    "ISC001",  # format warning
+    "S105",    # 硬编码路径也要叫吗
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["uds_mcp", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = ["error", "ignore::DeprecationWarning"]
+
+[tool.basedpyright]
+pythonVersion = "3.11"
+pythonPlatform = "All"
+typeCheckingMode = "standard"
+include = ["uds_mcp", "tests"]
+exclude = ["**/__pycache__", ".venv/**"]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'win32' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "sys_platform == 'darwin' and (platform_machine == 'arm64' or platform_machine == 'aarch64')",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+]

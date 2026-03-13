@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class ExtensionRuntime:
@@ -33,7 +35,7 @@ class ExtensionRuntime:
         globals_dict: dict[str, Any] = {"__name__": "__hook__"}
         locals_dict: dict[str, Any] = {}
         code = target.read_text(encoding="utf-8")
-        exec(compile(code, str(target), "exec"), globals_dict, locals_dict)
+        exec(compile(code, str(target), "exec"), globals_dict, locals_dict)  # noqa: S102
         fn = _get_callable(locals_dict, function_name)
         result = fn(MappingProxyType(context))
         if result is None:
@@ -45,17 +47,14 @@ class ExtensionRuntime:
     def run_snippet(self, *, code: str, context: dict[str, Any]) -> dict[str, Any]:
         globals_dict: dict[str, Any] = {"__name__": "__hook__"}
         locals_dict: dict[str, Any] = {"context": context, "result": {}}
-        exec(code, globals_dict, locals_dict)
+        exec(code, globals_dict, locals_dict)  # noqa: S102
         result = locals_dict.get("result", {})
         if not isinstance(result, dict):
             raise TypeError("snippet must set dict variable: result")
         return result
 
     def _is_allowed(self, target: Path) -> bool:
-        for allowed in self._whitelist_dirs:
-            if target.is_relative_to(allowed):
-                return True
-        return False
+        return any(target.is_relative_to(allowed) for allowed in self._whitelist_dirs)
 
 
 def _get_callable(namespace: dict[str, Any], function_name: str) -> Callable[..., Any]:

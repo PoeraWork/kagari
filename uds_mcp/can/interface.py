@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from threading import Lock
+from typing import TYPE_CHECKING
 
 import can
 
-from uds_mcp.can.config import CanConfig
-from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind, LogEvent
+
+if TYPE_CHECKING:
+    from uds_mcp.can.config import CanConfig
+    from uds_mcp.logging.store import EventStore
 
 
 class CanInterface:

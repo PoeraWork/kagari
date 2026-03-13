@@ -266,10 +266,10 @@ def test_before_hook_can_resend_nth_transfer_data_block() -> None:
                         "snippet": (
                             'count = len([t for t in context["trace"] if t["request_hex"].startswith("36")]) + 1\n'
                             'req = context["request_hex"]\n'
-                            'if count == 2:\n'
+                            "if count == 2:\n"
                             '    result = {"request_sequence_hex": [req, req]}\n'
-                            'else:\n'
-                            '    result = {}\n'
+                            "else:\n"
+                            "    result = {}\n"
                         )
                     },
                     "expect": {"response_prefix": "76"},
@@ -280,10 +280,10 @@ def test_before_hook_can_resend_nth_transfer_data_block() -> None:
                     "before_hook": {
                         "snippet": (
                             'count = len([t for t in context["trace"] if t["request_hex"].startswith("36")]) + 1\n'
-                            'if count == 4:\n'
+                            "if count == 4:\n"
                             '    result = {"request_hex": "36FFDD"}\n'
-                            'else:\n'
-                            '    result = {}\n'
+                            "else:\n"
+                            "    result = {}\n"
                         )
                     },
                     "expect": {"response_prefix": "76"},
@@ -324,8 +324,8 @@ def test_transfer_data_builtin_with_message_hook_can_mutate_nth_block() -> None:
                         "snippet": (
                             'if context["message_index"] == 2:\n'
                             '    result = {"request_hex": "3603EE"}\n'
-                            'else:\n'
-                            '    result = {}\n'
+                            "else:\n"
+                            "    result = {}\n"
                         )
                     },
                     "expect": {"response_prefix": "76"},
@@ -400,8 +400,8 @@ def test_transfer_data_fails_fast_on_unexpected_response_by_default() -> None:
                         "snippet": (
                             'if context["message_index"] == 1:\n'
                             '    result = {"request_hex": "3602BAD0"}\n'
-                            'else:\n'
-                            '    result = {}\n'
+                            "else:\n"
+                            "    result = {}\n"
                         )
                     },
                     "expect": {"response_prefix": "76"},
@@ -439,17 +439,17 @@ def test_transfer_data_can_disable_per_message_check_for_negative_hook_logic() -
                         "snippet": (
                             'if context["message_index"] == 1:\n'
                             '    result = {"request_hex": "3602BAD0"}\n'
-                            'else:\n'
-                            '    result = {}\n'
+                            "else:\n"
+                            "    result = {}\n"
                         )
                     },
                     "after_hook": {
                         "snippet": (
                             'curr = list(context["trace"])\n'
                             'seen_negative = any(t["response_hex"].startswith("7F") for t in curr)\n'
-                            'if not seen_negative:\n'
+                            "if not seen_negative:\n"
                             '    raise ValueError("expected negative response in transfer_data")\n'
-                            'result = {}\n'
+                            "result = {}\n"
                         )
                     },
                     "expect": {"response_prefix": "76"},
@@ -490,20 +490,20 @@ def test_flow_variables_path_keys_resolve_relative_to_yaml_dir(tmp_path: Path) -
                     "  - name: request_seed",
                     '    send: "2711"',
                     "    before_hook:",
-                    '      snippet: |',
+                    "      snippet: |",
                     '        v = dict(context["variables"])',
                     '        v["resolved_path"] = v["sbl_s19_path"]',
                     '        result = {"variables": v}',
-                    '    expect:',
+                    "    expect:",
                     '      response_prefix: "6711"',
                     "  - name: check_abs_path",
                     '    send: "2711"',
                     "    before_hook:",
-                    '      snippet: |',
-                    '        import os',
+                    "      snippet: |",
+                    "        import os",
                     '        req = "22ABCD" if os.path.isabs(context["variables"]["resolved_path"]) else "2711"',
                     '        result = {"request_hex": req}',
-                    '    expect:',
+                    "    expect:",
                     '      response_prefix: "62ABCD"',
                 ]
             )

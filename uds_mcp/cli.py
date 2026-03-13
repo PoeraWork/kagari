@@ -192,7 +192,7 @@ def _parse_int(value: str) -> int:
 
 
 def _print_json(data: dict[str, Any]) -> None:
-    print(json.dumps(data, ensure_ascii=True, indent=2, default=_json_default))
+    print(json.dumps(data, ensure_ascii=True, indent=2, default=_json_default))  # noqa: T201
 
 
 def _json_default(value: object) -> object:

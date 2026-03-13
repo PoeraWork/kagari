@@ -54,7 +54,7 @@ def build_security27_key(
 
 def _parse_hex(value: str, *, field_name: str) -> bytes:
     normalized = value.strip().replace(" ", "")
-    if normalized.startswith("0x") or normalized.startswith("0X"):
+    if normalized.startswith(("0x", "0X")):
         normalized = normalized[2:]
     if len(normalized) % 2 != 0:
         raise ValueError(f"{field_name} must contain an even number of hex chars")
