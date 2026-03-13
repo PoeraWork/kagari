@@ -46,6 +46,7 @@ Startup config behavior:
 
 - Prefer `./uds.toml` (or custom path via `UDS_MCP_CONFIG_PATH`).
 - Fallback to environment variables if the TOML file does not exist.
+- For TOML config, relative `flow_repo` and `extension_whitelist` are resolved against the TOML file directory.
 
 ## Quality Checks
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,7 +51,8 @@ class AppConfig:
     def from_toml_file(cls, path: Path) -> AppConfig:
         with path.open("rb") as f:
             data = tomllib.load(f)
-        return cls.from_toml_dict(data)
+        cfg = cls.from_toml_dict(data)
+        return cfg.resolve_paths(base_dir=path.resolve().parent)
 
     @classmethod
     def from_toml_dict(cls, data: dict[str, object]) -> AppConfig:
@@ -127,6 +129,19 @@ class AppConfig:
                 "tester_present_interval_sec": self.tester_present_interval_sec,
             },
         }
+
+    def resolve_paths(self, *, base_dir: Path) -> AppConfig:
+        flow_repo = self.flow_repo
+        extension_whitelist = self.extension_whitelist
+        if not flow_repo.is_absolute():
+            flow_repo = (base_dir / flow_repo).resolve()
+        if not extension_whitelist.is_absolute():
+            extension_whitelist = (base_dir / extension_whitelist).resolve()
+        return replace(
+            self,
+            flow_repo=flow_repo,
+            extension_whitelist=extension_whitelist,
+        )
 
 
 def load_config(default_path: Path | None = None) -> tuple[AppConfig, str]:

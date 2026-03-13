@@ -94,6 +94,7 @@ class _CliRuntime:
         self.flow_engine = FlowEngine(self.uds, self.event_store, self.runtime)
 
     def close(self) -> None:
+        self.uds.close()
         self.can.close()
 
 

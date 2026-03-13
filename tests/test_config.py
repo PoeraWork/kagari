@@ -98,6 +98,8 @@ tester_present_interval_sec = 2.0
     assert cfg.uds_tx_id == 0x701
     assert cfg.uds_tx_id_functional == 0x7DF
     assert cfg.uds_rx_id_functional == 0x7EA
+    assert cfg.flow_repo == (tmp_path / "flows").resolve()
+    assert cfg.extension_whitelist == (tmp_path / "extensions").resolve()
     assert source == str(path)
 
 

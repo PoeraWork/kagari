@@ -94,6 +94,17 @@ class UdsClientService:
     async def tester_present_status(self) -> dict[str, object]:
         return await asyncio.to_thread(self._tester_present_status_sync)
 
+    def close(self) -> None:
+        with self._client_lock:
+            if self._client.is_tester_present_sent:
+                self._client.stop_tester_present()
+            self._tester_present_owners.clear()
+            self._tester_present_mode = None
+
+            notifier = getattr(self._transport, "notifier", None)
+            if notifier is not None and hasattr(notifier, "stop"):
+                notifier.stop()
+
     def _send_sync(self, payload: bytes, timeout_ms: int, addressing_mode: str) -> dict[str, object]:
         addressing_type = _parse_addressing_mode(addressing_mode)
         with self._client_lock:
