@@ -141,6 +141,7 @@ class FlowEngine:
 
     async def _run_flow(self, run: FlowRun, flow: FlowDefinition) -> None:
         variables = dict(flow.variables)
+        previous_response_hex: str | None = None
         try:
             for step in flow.steps:
                 if run.stop_requested:
@@ -166,6 +167,7 @@ class FlowEngine:
                         step.before_hook.function_name,
                         step.before_hook.snippet,
                         request_hex,
+                        previous_response_hex,
                         variables,
                     )
 
@@ -182,6 +184,7 @@ class FlowEngine:
                 item = {"step": step.name, "request_hex": request_hex, "response_hex": response_hex}
                 run.trace.append(item)
                 self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+                previous_response_hex = response_hex
 
             run.status = FlowStatus.DONE
             self._log_state(run)
@@ -207,9 +210,16 @@ class FlowEngine:
         function_name: str | None,
         snippet: str | None,
         request_hex: str,
+        response_hex: str | None,
         variables: dict[str, Any],
     ) -> str:
-        context = {"request_hex": request_hex, "variables": variables}
+        original_variables = dict(variables)
+        context_variables = dict(variables)
+        context = {
+            "request_hex": request_hex,
+            "response_hex": response_hex,
+            "variables": context_variables,
+        }
         updates: dict[str, Any] = {}
         if script_path and function_name:
             updates = self._runtime.run_hook(
@@ -223,6 +233,14 @@ class FlowEngine:
         updated = updates.get("request_hex", request_hex)
         if not isinstance(updated, str):
             raise TypeError("hook output request_hex must be str")
+
+        updated_variables = updates.get("variables", context_variables)
+        if not isinstance(updated_variables, dict):
+            raise TypeError("hook output variables must be dict")
+        if updated_variables != original_variables:
+            variables.clear()
+            variables.update(updated_variables)
+
         return updated
 
     def _log_state(self, run: FlowRun) -> None:

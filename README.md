@@ -77,6 +77,8 @@ Used as fallback only when `uds.toml` is absent.
 - `can_tail`
 - `can_restart`
 - `uds_send`
+- `crypto_aes_cmac`
+- `security27_build_key`
 - `flow_load`
 - `flow_register_inline`
 - `flow_list`
@@ -96,6 +98,36 @@ Used as fallback only when `uds.toml` is absent.
 - `config_update`
 - `config_load`
 - `config_export`
+
+## Flow Hook Context
+
+`before_hook` now receives a context object with:
+
+- `request_hex`: request hex prepared for current step.
+- `response_hex`: previous step response hex (`None` on first step).
+- `variables`: flow variables snapshot.
+
+Hook outputs can now include `variables` for write-back. Example snippet:
+
+```python
+seed = context["response_hex"][4:]
+result = {
+		"request_hex": "2712" + seed,
+		"variables": {"seed": seed},
+}
+```
+
+## SecurityAccess Helpers
+
+- `crypto_aes_cmac(key_hex, data_hex, out_len=16)`: generic AES-CMAC helper.
+- `security27_build_key(level, seed_hex, key_hex, out_len=None, include_level_in_cmac=False)`:
+	build derived key and `27 xx + key` request payload for service `0x27` flows.
+
+## AI Collaboration Notes
+
+- Recommend using `uv` for environment management and command execution (`uv sync`, `uv run ...`).
+- For SecurityAccess (`0x27`) in flow mode, prefer MCP crypto tools over in-hook crypto imports.
+- Use `response_hex` + variable write-back in `before_hook` to chain seed-read and key-send steps.
 
 ## Runtime Config Switching
 
