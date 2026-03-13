@@ -33,6 +33,11 @@ uv run uds-mcp
 
 The server uses stdio transport by default (`FastMCP.run()`).
 
+Startup config behavior:
+
+- Prefer `./uds.toml` (or custom path via `UDS_MCP_CONFIG_PATH`).
+- Fallback to environment variables if the TOML file does not exist.
+
 ## Quality Checks
 
 Lint:
@@ -55,6 +60,8 @@ uv run pytest
 
 ## Environment Variables
 
+Used as fallback only when `uds.toml` is absent.
+
 - `UDS_MCP_CAN_INTERFACE` default: `socketcan`
 - `UDS_MCP_CAN_CHANNEL` default: `vcan0`
 - `UDS_MCP_CAN_BITRATE` default: `500000`
@@ -68,6 +75,7 @@ uv run pytest
 
 - `can_send`
 - `can_tail`
+- `can_restart`
 - `uds_send`
 - `flow_load`
 - `flow_register_inline`
@@ -82,6 +90,21 @@ uv run pytest
 - `flow_save`
 - `log_export_blf`
 - `log_query`
+- `config_get`
+- `config_update`
+- `config_load`
+- `config_export`
+
+## Runtime Config Switching
+
+You can modify config during a session and switch profiles without restarting MCP:
+
+- Use `config_get` to inspect current runtime config.
+- Use `config_update` to patch selected fields (channel, bitrate, IDs, paths, etc.).
+- Use `config_load(path)` to switch to another TOML profile.
+- Use `config_export(path)` to persist current runtime config.
+
+Note: reconfiguration is blocked while any flow run is `RUNNING` or `PAUSED`.
 
 ## Notes
 

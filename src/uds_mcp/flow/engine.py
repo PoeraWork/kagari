@@ -63,6 +63,18 @@ class FlowEngine:
     def list_flows(self) -> list[str]:
         return sorted(self._flows.keys())
 
+    def has_active_runs(self) -> bool:
+        for run in self._runs.values():
+            if run.status in {FlowStatus.RUNNING, FlowStatus.PAUSED}:
+                return True
+        return False
+
+    def set_uds_client(self, uds_client: UdsClientService) -> None:
+        self._uds_client = uds_client
+
+    def set_runtime(self, runtime: ExtensionRuntime) -> None:
+        self._runtime = runtime
+
     async def start(self, flow_name: str) -> str:
         flow = self._flows[flow_name]
         run_id = uuid.uuid4().hex

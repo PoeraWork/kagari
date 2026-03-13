@@ -6,14 +6,7 @@
       "args": ["run", "uds-mcp"],
       "cwd": "${workspaceFolder}",
       "env": {
-        "UDS_MCP_CAN_INTERFACE": "virtual",
-        "UDS_MCP_CAN_CHANNEL": "uds-mcp-test",
-        "UDS_MCP_CAN_BITRATE": "500000",
-        "UDS_MCP_UDS_TX_ID": "0x7E0",
-        "UDS_MCP_UDS_RX_ID": "0x7E8",
-        "UDS_MCP_FLOW_REPO": "${workspaceFolder}/examples/flows",
-        "UDS_MCP_EXTENSION_WHITELIST": "${workspaceFolder}/examples/extensions",
-        "UDS_MCP_TESTER_PRESENT_INTERVAL": "2.0"
+        "UDS_MCP_CONFIG_PATH": "${workspaceFolder}/uds.toml"
       }
     }
   }
