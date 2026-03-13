@@ -112,6 +112,7 @@ Used as fallback only when `uds.toml` is absent.
 - `request_hex`: request hex prepared for current step.
 - `response_hex`: previous step response hex (`None` on first step).
 - `variables`: flow variables snapshot.
+- `trace`: read-only historical step records (`step/request_hex/response_hex`).
 
 Hook outputs can now include `variables` for write-back. Example snippet:
 
@@ -122,6 +123,12 @@ result = {
 		"variables": {"seed": seed},
 }
 ```
+
+`after_hook` is also supported per step. It receives current `request_hex`, current `response_hex`,
+`variables`, and read-only `trace`. Hook output can include:
+
+- `variables`: write-back variables for next steps.
+- `response_hex`: optional response override before `expect` checks.
 
 ## UDS Addressing And TesterPresent
 

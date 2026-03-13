@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from uds_mcp.extensions.runtime import ExtensionRuntime
@@ -177,17 +178,29 @@ class FlowEngine:
 
                     request_hex = step.send
                     if step.before_hook:
-                        request_hex = self._apply_hook(
+                        request_hex = self._apply_before_hook(
                             step.before_hook.script_path,
                             step.before_hook.function_name,
                             step.before_hook.snippet,
                             request_hex,
                             previous_response_hex,
                             variables,
+                            run.trace,
                         )
 
                     response = await self._uds_client.send(request_hex, timeout_ms=step.timeout_ms)
                     response_hex = str(response["response_hex"])
+
+                    if step.after_hook:
+                        response_hex = self._apply_after_hook(
+                            step.after_hook.script_path,
+                            step.after_hook.function_name,
+                            step.after_hook.snippet,
+                            request_hex,
+                            response_hex,
+                            variables,
+                            run.trace,
+                        )
 
                     if step.expect and step.expect.response_prefix:
                         expected = step.expect.response_prefix.upper()
@@ -227,7 +240,7 @@ class FlowEngine:
             if flow_owner_active:
                 await self._uds_client.stop_tester_present_owner("flow-run")
 
-    def _apply_hook(
+    def _apply_before_hook(
         self,
         script_path: str | None,
         function_name: str | None,
@@ -235,14 +248,57 @@ class FlowEngine:
         request_hex: str,
         response_hex: str | None,
         variables: dict[str, Any],
+        trace: list[dict[str, Any]],
     ) -> str:
-        original_variables = dict(variables)
         context_variables = dict(variables)
-        context = {
-            "request_hex": request_hex,
-            "response_hex": response_hex,
-            "variables": context_variables,
-        }
+        context = self._build_hook_context(
+            request_hex=request_hex,
+            response_hex=response_hex,
+            variables=context_variables,
+            trace=trace,
+        )
+        updates = self._run_hook(script_path, function_name, snippet, context)
+
+        updated = updates.get("request_hex", request_hex)
+        if not isinstance(updated, str):
+            raise TypeError("hook output request_hex must be str")
+
+        self._apply_variable_updates(variables, context_variables, updates)
+        return updated
+
+    def _apply_after_hook(
+        self,
+        script_path: str | None,
+        function_name: str | None,
+        snippet: str | None,
+        request_hex: str,
+        response_hex: str,
+        variables: dict[str, Any],
+        trace: list[dict[str, Any]],
+    ) -> str:
+        context_variables = dict(variables)
+        context = self._build_hook_context(
+            request_hex=request_hex,
+            response_hex=response_hex,
+            variables=context_variables,
+            trace=trace,
+        )
+        updates = self._run_hook(script_path, function_name, snippet, context)
+
+        updated = updates.get("response_hex", response_hex)
+        if not isinstance(updated, str):
+            raise TypeError("hook output response_hex must be str")
+
+        self._apply_variable_updates(variables, context_variables, updates)
+        return updated
+
+    def _run_hook(
+        self,
+        script_path: str | None,
+        function_name: str | None,
+        snippet: str | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
         updates: dict[str, Any] = {}
         if script_path and function_name:
             updates = self._runtime.run_hook(
@@ -252,19 +308,36 @@ class FlowEngine:
             )
         elif snippet:
             updates = self._runtime.run_snippet(code=snippet, context=context)
+        return updates
 
-        updated = updates.get("request_hex", request_hex)
-        if not isinstance(updated, str):
-            raise TypeError("hook output request_hex must be str")
+    def _build_hook_context(
+        self,
+        *,
+        request_hex: str,
+        response_hex: str | None,
+        variables: dict[str, Any],
+        trace: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "request_hex": request_hex,
+            "response_hex": response_hex,
+            "variables": variables,
+            "trace": _readonly_trace(trace),
+        }
 
+    def _apply_variable_updates(
+        self,
+        variables: dict[str, Any],
+        context_variables: dict[str, Any],
+        updates: dict[str, Any],
+    ) -> None:
+        original_variables = dict(variables)
         updated_variables = updates.get("variables", context_variables)
         if not isinstance(updated_variables, dict):
             raise TypeError("hook output variables must be dict")
         if updated_variables != original_variables:
             variables.clear()
             variables.update(updated_variables)
-
-        return updated
 
     def _log_state(self, run: FlowRun) -> None:
         self._event_store.append(
@@ -279,3 +352,10 @@ class FlowEngine:
                 },
             )
         )
+
+
+def _readonly_trace(trace: list[dict[str, Any]]) -> tuple[MappingProxyType[str, Any], ...]:
+    items: list[MappingProxyType[str, Any]] = []
+    for entry in trace:
+        items.append(MappingProxyType(dict(entry)))
+    return tuple(items)

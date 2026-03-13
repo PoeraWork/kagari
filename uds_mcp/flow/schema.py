@@ -25,6 +25,7 @@ class FlowStep(BaseModel):
     breakpoint: bool = False
     tester_present: Literal["inherit", "on", "off"] = "inherit"
     before_hook: HookConfig | None = None
+    after_hook: HookConfig | None = None
 
 
 class FlowDefinition(BaseModel):

@@ -186,3 +186,57 @@ def test_tester_present_step_on_when_policy_off() -> None:
         ]
 
     asyncio.run(_run())
+
+
+def test_before_hook_trace_and_after_hook_variable_writeback() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="trace_after_hook_flow",
+            variables={},
+            steps=[
+                {
+                    "name": "request_seed",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                },
+                {
+                    "name": "read_via_trace",
+                    "send": "22F190",
+                    "before_hook": {
+                        "snippet": (
+                            'seed = context["trace"][-1]["response_hex"][4:]\n'
+                            'result = {"request_hex": "22" + seed}'
+                        )
+                    },
+                    "after_hook": {
+                        "snippet": (
+                            'variables = dict(context["variables"])\n'
+                            'variables["did"] = context["response_hex"][2:6]\n'
+                            'result = {"variables": variables}'
+                        )
+                    },
+                    "expect": {"response_prefix": "62ABCD"},
+                },
+                {
+                    "name": "reuse_after_hook_variable",
+                    "send": "22F190",
+                    "before_hook": {
+                        "snippet": 'result = {"request_hex": "22" + context["variables"]["did"]}'
+                    },
+                    "expect": {"response_prefix": "62ABCD"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert final["trace"][1]["request_hex"] == "22ABCD"
+        assert final["trace"][2]["request_hex"] == "22ABCD"
+
+    asyncio.run(_run())
