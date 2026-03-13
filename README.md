@@ -124,6 +124,35 @@ result = {
 }
 ```
 
+`before_hook` can also return `request_sequence_hex` (`list[str]`) to send multiple requests
+within one step (for block-level fault injection such as deliberate resend):
+
+```python
+req = context["request_hex"]
+result = {"request_sequence_hex": [req, req]}
+```
+
+For built-in `0x36` TransferData, you can use step-level `transfer_data` and optional
+single-message `message_hook`:
+
+```yaml
+steps:
+	- name: transfer_payload
+		transfer_data:
+			data_hex: "AABBCCDD"
+			chunk_size: 1
+			block_counter_start: 1
+		message_hook:
+			snippet: |
+				if context["message_index"] == 2:
+					result = {"request_hex": "3603EE"}
+				else:
+					result = {}
+```
+
+`message_hook` context includes `message_index`, `message_total`, `step_name`, `request_hex`,
+`response_hex`, `variables`, and read-only `trace`.
+
 `after_hook` is also supported per step. It receives current `request_hex`, current `response_hex`,
 `variables`, and read-only `trace`. Hook output can include:
 

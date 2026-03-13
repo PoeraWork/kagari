@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Any
 
 from uds_mcp.extensions.runtime import ExtensionRuntime
-from uds_mcp.flow.schema import FlowDefinition, dump_flow_yaml, load_flow_yaml
+from uds_mcp.flow.schema import FlowDefinition, FlowStep, dump_flow_yaml, load_flow_yaml
 from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind, LogEvent
 from uds_mcp.uds.client import UdsClientService
@@ -176,20 +176,52 @@ class FlowEngine:
                         run.status = FlowStatus.RUNNING
                         self._log_state(run)
 
-                    request_hex = step.send
+                    request_sequence = self._build_step_request_sequence(step)
+                    base_request_hex = request_sequence[0]
                     if step.before_hook:
-                        request_hex = self._apply_before_hook(
+                        request_sequence = self._apply_before_hook(
                             step.before_hook.script_path,
                             step.before_hook.function_name,
                             step.before_hook.snippet,
-                            request_hex,
+                            base_request_hex,
                             previous_response_hex,
                             variables,
                             run.trace,
                         )
 
-                    response = await self._uds_client.send(request_hex, timeout_ms=step.timeout_ms)
-                    response_hex = str(response["response_hex"])
+                    response_hex = ""
+                    sent_count = 0
+                    for base_index, request_hex in enumerate(request_sequence):
+                        per_message_sequence = [request_hex]
+                        if step.message_hook:
+                            per_message_sequence = self._apply_message_hook(
+                                step.message_hook.script_path,
+                                step.message_hook.function_name,
+                                step.message_hook.snippet,
+                                request_hex,
+                                previous_response_hex,
+                                variables,
+                                run.trace,
+                                message_index=base_index,
+                                message_total=len(request_sequence),
+                                step_name=step.name,
+                            )
+
+                        for request_hex in per_message_sequence:
+                            response = await self._uds_client.send(request_hex, timeout_ms=step.timeout_ms)
+                            response_hex = str(response["response_hex"])
+
+                            item = {
+                                "step": step.name,
+                                "request_hex": request_hex,
+                                "response_hex": response_hex,
+                                "request_index": sent_count,
+                                "request_total": len(request_sequence),
+                            }
+                            run.trace.append(item)
+                            self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+                            previous_response_hex = response_hex
+                            sent_count += 1
 
                     if step.after_hook:
                         response_hex = self._apply_after_hook(
@@ -208,11 +240,6 @@ class FlowEngine:
                             raise ValueError(
                                 f"step {step.name}: expect prefix {expected}, got {response_hex}"
                             )
-
-                    item = {"step": step.name, "request_hex": request_hex, "response_hex": response_hex}
-                    run.trace.append(item)
-                    self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
-                    previous_response_hex = response_hex
                 finally:
                     if step_owner_active:
                         await self._uds_client.stop_tester_present_owner("flow-step")
@@ -249,7 +276,7 @@ class FlowEngine:
         response_hex: str | None,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
-    ) -> str:
+    ) -> list[str]:
         context_variables = dict(variables)
         context = self._build_hook_context(
             request_hex=request_hex,
@@ -259,12 +286,63 @@ class FlowEngine:
         )
         updates = self._run_hook(script_path, function_name, snippet, context)
 
-        updated = updates.get("request_hex", request_hex)
-        if not isinstance(updated, str):
-            raise TypeError("hook output request_hex must be str")
+        sequence = updates.get("request_sequence_hex")
+        if sequence is not None:
+            if not isinstance(sequence, list) or not sequence:
+                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
+            if not all(isinstance(item, str) for item in sequence):
+                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
+            updated_sequence = sequence
+        else:
+            updated = updates.get("request_hex", request_hex)
+            if not isinstance(updated, str):
+                raise TypeError("hook output request_hex must be str")
+            updated_sequence = [updated]
 
         self._apply_variable_updates(variables, context_variables, updates)
-        return updated
+        return updated_sequence
+
+    def _apply_message_hook(
+        self,
+        script_path: str | None,
+        function_name: str | None,
+        snippet: str | None,
+        request_hex: str,
+        response_hex: str | None,
+        variables: dict[str, Any],
+        trace: list[dict[str, Any]],
+        *,
+        message_index: int,
+        message_total: int,
+        step_name: str,
+    ) -> list[str]:
+        context_variables = dict(variables)
+        context = self._build_hook_context(
+            request_hex=request_hex,
+            response_hex=response_hex,
+            variables=context_variables,
+            trace=trace,
+            message_index=message_index,
+            message_total=message_total,
+            step_name=step_name,
+        )
+        updates = self._run_hook(script_path, function_name, snippet, context)
+
+        sequence = updates.get("request_sequence_hex")
+        if sequence is not None:
+            if not isinstance(sequence, list) or not sequence:
+                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
+            if not all(isinstance(item, str) for item in sequence):
+                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
+            updated_sequence = sequence
+        else:
+            updated = updates.get("request_hex", request_hex)
+            if not isinstance(updated, str):
+                raise TypeError("hook output request_hex must be str")
+            updated_sequence = [updated]
+
+        self._apply_variable_updates(variables, context_variables, updates)
+        return updated_sequence
 
     def _apply_after_hook(
         self,
@@ -317,13 +395,23 @@ class FlowEngine:
         response_hex: str | None,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
+        message_index: int | None = None,
+        message_total: int | None = None,
+        step_name: str | None = None,
     ) -> dict[str, Any]:
-        return {
+        context: dict[str, Any] = {
             "request_hex": request_hex,
             "response_hex": response_hex,
             "variables": variables,
             "trace": _readonly_trace(trace),
         }
+        if message_index is not None:
+            context["message_index"] = message_index
+        if message_total is not None:
+            context["message_total"] = message_total
+        if step_name is not None:
+            context["step_name"] = step_name
+        return context
 
     def _apply_variable_updates(
         self,
@@ -353,9 +441,56 @@ class FlowEngine:
             )
         )
 
+    def _build_step_request_sequence(self, step: FlowStep) -> list[str]:
+        if step.transfer_data is None:
+            if step.send is None:
+                raise ValueError(f"step {step.name}: send is required when transfer_data is not set")
+            return [step.send]
+
+        cfg = step.transfer_data
+        payload = _load_transfer_payload(cfg.data_hex, cfg.data_file)
+        prefix = _normalize_hex(cfg.request_prefix_hex, field_name="request_prefix_hex").upper()
+        if len(prefix) != 2:
+            raise ValueError("transfer_data.request_prefix_hex must be exactly one byte")
+
+        requests: list[str] = []
+        block_counter = cfg.block_counter_start
+        for offset in range(0, len(payload), cfg.chunk_size):
+            chunk = payload[offset : offset + cfg.chunk_size]
+            request_hex = f"{prefix}{block_counter:02X}{chunk.hex().upper()}"
+            requests.append(request_hex)
+            block_counter = (block_counter + 1) & 0xFF
+
+        if not requests:
+            raise ValueError(f"step {step.name}: transfer_data payload is empty")
+
+        return requests
+
 
 def _readonly_trace(trace: list[dict[str, Any]]) -> tuple[MappingProxyType[str, Any], ...]:
     items: list[MappingProxyType[str, Any]] = []
     for entry in trace:
         items.append(MappingProxyType(dict(entry)))
     return tuple(items)
+
+
+def _load_transfer_payload(data_hex: str | None, data_file: str | None) -> bytes:
+    if data_hex is not None:
+        normalized = _normalize_hex(data_hex, field_name="transfer_data.data_hex")
+        return bytes.fromhex(normalized)
+    if data_file is not None:
+        return Path(data_file).read_bytes()
+    raise ValueError("transfer_data requires data_hex or data_file")
+
+
+def _normalize_hex(value: str, *, field_name: str) -> str:
+    normalized = value.strip().replace(" ", "")
+    if normalized.startswith("0x") or normalized.startswith("0X"):
+        normalized = normalized[2:]
+    if len(normalized) % 2 != 0:
+        raise ValueError(f"{field_name} must contain an even number of hex chars")
+    try:
+        bytes.fromhex(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} is not valid hex") from exc
+    return normalized
