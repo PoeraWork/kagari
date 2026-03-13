@@ -2,18 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from uds_mcp.extensions.runtime import ExtensionRuntime
 
 
-def test_run_snippet_import_blocked_by_default() -> None:
+def test_run_snippet_import_allowed_by_default() -> None:
     runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
-    with pytest.raises(ImportError):
-        runtime.run_snippet(code="import Crypto\nresult = {}", context={})
+    result = runtime.run_snippet(code="import os\nresult = {'ok': bool(os.name)}", context={})
+    assert result["ok"]
 
 
-def test_run_snippet_import_allowed_by_whitelist() -> None:
+def test_run_snippet_import_allowed_with_whitelist_config_present() -> None:
     runtime = ExtensionRuntime(
         [Path("examples/extensions").resolve()],
         import_whitelist=("Crypto",),
@@ -31,10 +29,10 @@ def test_run_snippet_import_allowed_by_whitelist() -> None:
     assert result["cmac_hex"]
 
 
-def test_run_snippet_non_whitelisted_direct_import_denied() -> None:
+def test_run_snippet_can_import_non_whitelisted_module() -> None:
     runtime = ExtensionRuntime(
         [Path("examples/extensions").resolve()],
         import_whitelist=("Crypto",),
     )
-    with pytest.raises(ImportError):
-        runtime.run_snippet(code="import os\nresult = {}", context={})
+    result = runtime.run_snippet(code="import os\nresult = {'cwd': bool(os.getcwd())}", context={})
+    assert result["cwd"]

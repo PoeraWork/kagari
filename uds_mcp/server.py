@@ -159,9 +159,8 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             "Hook outputs can include request_hex, request_sequence_hex(list[str]), response_hex, "
             "variables, and transfer segments from segments_hook. "
             "transfer_data uses standardized segments(address+data_hex) with optional "
-            "segments_hook for dynamic generation. Import in hook sandbox is denied "
-            "by default and can be enabled "
-            "with extension_import_whitelist config."
+            "segments_hook for dynamic generation. Hook runtime uses full Python "
+            "imports/builtins; users are responsible for hook code safety."
         ),
         json_response=True,
     )
@@ -324,10 +323,11 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                     "Flow consumes standardized segments only.",
                 ],
             },
-            "import_sandbox": {
-                "default": "import denied",
-                "config": "extension_import_whitelist",
-                "runtime_update": "config_update(extension_import_whitelist=[...])",
+            "hook_runtime": {
+                "imports": "unrestricted",
+                "builtins": "unrestricted",
+                "security_model": "user-managed",
+                "note": "extension_import_whitelist is retained for backward compatibility",
             },
         }
 
