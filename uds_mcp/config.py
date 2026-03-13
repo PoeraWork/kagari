@@ -19,6 +19,7 @@ class AppConfig:
     uds_rx_id_functional: int = 0x7E8
     flow_repo: Path = Path("./flows")
     extension_whitelist: Path = Path("./extensions")
+    extension_import_whitelist: tuple[str, ...] = ()
     tester_present_interval_sec: float = 2.0
 
     @classmethod
@@ -39,6 +40,9 @@ class AppConfig:
             ),
             flow_repo=Path(os.getenv("UDS_MCP_FLOW_REPO", "./flows")),
             extension_whitelist=Path(os.getenv("UDS_MCP_EXTENSION_WHITELIST", "./extensions")),
+            extension_import_whitelist=_parse_import_whitelist_env(
+                os.getenv("UDS_MCP_EXTENSION_IMPORT_WHITELIST", "")
+            ),
             tester_present_interval_sec=float(os.getenv("UDS_MCP_TESTER_PRESENT_INTERVAL", "2.0")),
         )
 
@@ -65,6 +69,12 @@ class AppConfig:
         uds_table = uds_cfg or {}
         app_table = app_cfg or {}
 
+        raw_import_whitelist = app_table.get("extension_import_whitelist", [])
+        if not isinstance(raw_import_whitelist, list):
+            raise TypeError("[app].extension_import_whitelist must be an array of strings")
+        if not all(isinstance(item, str) for item in raw_import_whitelist):
+            raise TypeError("[app].extension_import_whitelist must be an array of strings")
+
         return cls(
             can_interface=str(can_table.get("interface", "socketcan")),
             can_channel=str(can_table.get("channel", "vcan0")),
@@ -75,6 +85,7 @@ class AppConfig:
             uds_rx_id_functional=int(uds_table.get("rx_functional_id", 0x7E8)),
             flow_repo=Path(str(app_table.get("flow_repo", "./flows"))),
             extension_whitelist=Path(str(app_table.get("extension_whitelist", "./extensions"))),
+            extension_import_whitelist=tuple(raw_import_whitelist),
             tester_present_interval_sec=float(app_table.get("tester_present_interval_sec", 2.0)),
         )
 
@@ -92,6 +103,7 @@ class AppConfig:
             "[app]\n"
             f"flow_repo = {self.flow_repo.as_posix()!r}\n"
             f"extension_whitelist = {self.extension_whitelist.as_posix()!r}\n"
+            f"extension_import_whitelist = {list(self.extension_import_whitelist)!r}\n"
             f"tester_present_interval_sec = {self.tester_present_interval_sec}\n"
         )
 
@@ -111,6 +123,7 @@ class AppConfig:
             "app": {
                 "flow_repo": self.flow_repo.as_posix(),
                 "extension_whitelist": self.extension_whitelist.as_posix(),
+                "extension_import_whitelist": list(self.extension_import_whitelist),
                 "tester_present_interval_sec": self.tester_present_interval_sec,
             },
         }
@@ -121,3 +134,9 @@ def load_config(default_path: Path | None = None) -> tuple[AppConfig, str]:
     if config_path.exists():
         return AppConfig.from_toml_file(config_path), str(config_path)
     return AppConfig.from_env(), "env"
+
+
+def _parse_import_whitelist_env(value: str) -> tuple[str, ...]:
+    parts = [item.strip() for item in value.split(",")]
+    filtered = [item for item in parts if item]
+    return tuple(filtered)

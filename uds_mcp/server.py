@@ -29,7 +29,10 @@ class AppState:
         self.blf_exporter = BlfExporter()
         self.can = self._build_can(config)
         self.uds = self._build_uds(config, self.can)
-        self.extension_runtime = ExtensionRuntime([config.extension_whitelist.resolve()])
+        self.extension_runtime = ExtensionRuntime(
+            [config.extension_whitelist.resolve()],
+            import_whitelist=config.extension_import_whitelist,
+        )
         self.flow_engine = FlowEngine(self.uds, self.event_store, self.extension_runtime)
         self._ensure_paths()
 
@@ -75,7 +78,10 @@ class AppState:
         self.config_source = source
         self.can = self._build_can(new_config)
         self.uds = self._build_uds(new_config, self.can)
-        self.extension_runtime = ExtensionRuntime([new_config.extension_whitelist.resolve()])
+        self.extension_runtime = ExtensionRuntime(
+            [new_config.extension_whitelist.resolve()],
+            import_whitelist=new_config.extension_import_whitelist,
+        )
         self.flow_engine.set_uds_client(self.uds)
         self.flow_engine.set_runtime(self.extension_runtime)
         self._ensure_paths()
@@ -92,6 +98,7 @@ class AppState:
         uds_rx_id_functional: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
+        extension_import_whitelist: list[str] | None = None,
         tester_present_interval_sec: float | None = None,
     ) -> None:
         updated = replace(
@@ -116,6 +123,11 @@ class AppState:
                 Path(extension_whitelist)
                 if extension_whitelist is not None
                 else self.config.extension_whitelist
+            ),
+            extension_import_whitelist=(
+                tuple(extension_import_whitelist)
+                if extension_import_whitelist is not None
+                else self.config.extension_import_whitelist
             ),
             tester_present_interval_sec=(
                 tester_present_interval_sec
@@ -376,6 +388,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         uds_rx_id_functional: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
+        extension_import_whitelist: list[str] | None = None,
         tester_present_interval_sec: float | None = None,
     ) -> dict[str, object]:
         state.update_config(
@@ -388,6 +401,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             uds_rx_id_functional=uds_rx_id_functional,
             flow_repo=flow_repo,
             extension_whitelist=extension_whitelist,
+            extension_import_whitelist=extension_import_whitelist,
             tester_present_interval_sec=tester_present_interval_sec,
         )
         return {"ok": True, **state.to_dict()}

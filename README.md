@@ -71,6 +71,7 @@ Used as fallback only when `uds.toml` is absent.
 - `UDS_MCP_UDS_RX_FUNCTIONAL_ID` default: `0x7E8`
 - `UDS_MCP_FLOW_REPO` default: `./flows`
 - `UDS_MCP_EXTENSION_WHITELIST` default: `./extensions`
+- `UDS_MCP_EXTENSION_IMPORT_WHITELIST` default: empty (comma-separated roots, e.g. `Crypto`)
 - `UDS_MCP_TESTER_PRESENT_INTERVAL` default: `2.0`
 
 ## Implemented MCP Tools
@@ -168,6 +169,14 @@ steps:
 - Recommend using `uv` for environment management and command execution (`uv sync`, `uv run ...`).
 - For SecurityAccess (`0x27`) in flow mode, prefer MCP crypto tools over in-hook crypto imports.
 - Use `response_hex` + variable write-back in `before_hook` to chain seed-read and key-send steps.
+
+## Hook Import Whitelist
+
+- Hook sandbox keeps `import` blocked by default.
+- You can allow selected module roots via config:
+	- `app.extension_import_whitelist = ["Crypto"]` in TOML, or
+	- `UDS_MCP_EXTENSION_IMPORT_WHITELIST=Crypto` in env.
+- Only whitelisted roots are importable directly from hook code.
 
 ## Runtime Config Switching
 

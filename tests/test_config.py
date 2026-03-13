@@ -19,6 +19,7 @@ def test_app_config_from_toml_dict() -> None:
             "app": {
                 "flow_repo": "./flows2",
                 "extension_whitelist": "./extensions2",
+                "extension_import_whitelist": ["Crypto"],
                 "tester_present_interval_sec": 1.5,
             },
         }
@@ -33,6 +34,7 @@ def test_app_config_from_toml_dict() -> None:
     assert cfg.uds_rx_id_functional == 0x7E9
     assert cfg.flow_repo == Path("./flows2")
     assert cfg.extension_whitelist == Path("./extensions2")
+    assert cfg.extension_import_whitelist == ("Crypto",)
     assert cfg.tester_present_interval_sec == 1.5
 
 
@@ -47,6 +49,7 @@ def test_app_config_to_toml_roundtrip() -> None:
         uds_rx_id_functional=0x7E8,
         flow_repo=Path("./flows"),
         extension_whitelist=Path("./extensions"),
+        extension_import_whitelist=("Crypto",),
         tester_present_interval_sec=2.0,
     )
 
@@ -59,6 +62,7 @@ def test_app_config_to_toml_roundtrip() -> None:
     assert parsed["uds"]["rx_physical_id"] == 0x7E8
     assert parsed["uds"]["tx_functional_id"] == 0x7DF
     assert parsed["uds"]["rx_functional_id"] == 0x7E8
+    assert parsed["app"]["extension_import_whitelist"] == ["Crypto"]
 
 
 def test_load_config_prefers_toml(monkeypatch, tmp_path: Path) -> None:
@@ -79,6 +83,7 @@ rx_functional_id = 0x7ea
 [app]
 flow_repo = "./flows"
 extension_whitelist = "./extensions"
+extension_import_whitelist = ["Crypto"]
 tester_present_interval_sec = 2.0
 """.strip()
         + "\n",
@@ -103,6 +108,7 @@ def test_load_config_fallback_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("UDS_MCP_CAN_BITRATE", "250000")
     monkeypatch.setenv("UDS_MCP_UDS_TX_FUNCTIONAL_ID", "0x7DF")
     monkeypatch.setenv("UDS_MCP_UDS_RX_FUNCTIONAL_ID", "0x7EA")
+    monkeypatch.setenv("UDS_MCP_EXTENSION_IMPORT_WHITELIST", "Crypto,hashlib")
 
     cfg, source = load_config()
 
@@ -111,4 +117,5 @@ def test_load_config_fallback_env(monkeypatch, tmp_path: Path) -> None:
     assert cfg.can_bitrate == 250000
     assert cfg.uds_tx_id_functional == 0x7DF
     assert cfg.uds_rx_id_functional == 0x7EA
+    assert cfg.extension_import_whitelist == ("Crypto", "hashlib")
     assert source == "env"

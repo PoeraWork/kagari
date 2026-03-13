@@ -12,4 +12,5 @@ rx_functional_id = 0x7E8
 [app]
 flow_repo = "./examples/flows"
 extension_whitelist = "./examples/extensions"
+extension_import_whitelist = ["Crypto"]
 tester_present_interval_sec = 2.0
