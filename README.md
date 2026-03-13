@@ -33,6 +33,15 @@ uv run uds-mcp
 
 The server uses stdio transport by default (`FastMCP.run()`).
 
+Direct CLI (without MCP client):
+
+```bash
+uv run uds-mcp-cli config-show
+uv run uds-mcp-cli uds-send 1003 --timeout-ms 1200 --addressing-mode physical
+uv run uds-mcp-cli flow-run ./examples/flows/demo_virtual_can_flow.yaml
+uv run uds-mcp-cli flow-run ./examples/flows/demo_virtual_can_flow.yaml --config ./uds.toml
+```
+
 Startup config behavior:
 
 - Prefer `./uds.toml` (or custom path via `UDS_MCP_CONFIG_PATH`).
