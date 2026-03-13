@@ -128,7 +128,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         json_response=True,
     )
 
-    @mcp.tool()
+    @mcp.tool(description="Send one CAN frame by arbitration ID and hex payload.")
     def can_send(
         arbitration_id: int,
         data_hex: str,
@@ -142,7 +142,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             "is_extended_id": is_extended_id,
         }
 
-    @mcp.tool()
+    @mcp.tool(description="Return recent CAN TX/RX events from the in-memory event store.")
     def can_tail(limit: int = 100) -> list[dict[str, object]]:
         return [
             item.to_dict()
@@ -152,21 +152,21 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             )
         ]
 
-    @mcp.tool()
+    @mcp.tool(description="Restart CAN interface using current runtime configuration.")
     def can_restart() -> dict[str, object]:
         state.restart_can()
         return {"ok": True, "channel": state.config.can_channel}
 
-    @mcp.tool()
+    @mcp.tool(description="Send one UDS request and wait for response.")
     async def uds_send(request_hex: str, timeout_ms: int = 1000) -> dict[str, object]:
         return await state.uds.send(request_hex, timeout_ms=timeout_ms)
 
-    @mcp.tool()
+    @mcp.tool(description="Load a flow definition file and register it in runtime.")
     def flow_load(path: str) -> dict[str, object]:
         flow = state.flow_engine.load(Path(path))
         return {"ok": True, "flow": flow.name, "steps": len(flow.steps)}
 
-    @mcp.tool()
+    @mcp.tool(description="Register a flow from inline step definitions.")
     def flow_register_inline(
         name: str,
         steps: list[dict[str, object]],
@@ -176,35 +176,35 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         state.flow_engine.register(flow)
         return {"ok": True, "flow": flow.name, "steps": len(flow.steps)}
 
-    @mcp.tool()
+    @mcp.tool(description="List all registered flow names.")
     def flow_list() -> list[str]:
         return state.flow_engine.list_flows()
 
-    @mcp.tool()
+    @mcp.tool(description="Start a registered flow asynchronously.")
     async def flow_start(flow_name: str) -> dict[str, object]:
         run_id = await state.flow_engine.start(flow_name)
         return {"ok": True, "run_id": run_id}
 
-    @mcp.tool()
+    @mcp.tool(description="Get current status of a flow run by run_id.")
     def flow_status(run_id: str) -> dict[str, object]:
         return state.flow_engine.status(run_id)
 
-    @mcp.tool()
+    @mcp.tool(description="Stop a running or paused flow run.")
     def flow_stop(run_id: str) -> dict[str, object]:
         state.flow_engine.stop(run_id)
         return {"ok": True}
 
-    @mcp.tool()
+    @mcp.tool(description="Resume a paused flow run.")
     def flow_resume(run_id: str) -> dict[str, object]:
         state.flow_engine.resume(run_id)
         return {"ok": True}
 
-    @mcp.tool()
+    @mcp.tool(description="Enable or disable a breakpoint on a flow step.")
     def flow_breakpoint(flow_name: str, step_name: str, enabled: bool = True) -> dict[str, object]:
         state.flow_engine.set_breakpoint(flow_name, step_name, enabled)
         return {"ok": True}
 
-    @mcp.tool()
+    @mcp.tool(description="Patch a flow step send/expect fields at runtime.")
     def flow_patch_step(
         flow_name: str,
         step_name: str,
@@ -219,16 +219,16 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         )
         return {"ok": True}
 
-    @mcp.tool()
+    @mcp.tool(description="Inject one UDS request into running flow context.")
     async def flow_inject_uds(request_hex: str, timeout_ms: int = 1000) -> dict[str, object]:
         return await state.flow_engine.inject_once(request_hex, timeout_ms)
 
-    @mcp.tool()
+    @mcp.tool(description="Save a registered flow definition to file.")
     def flow_save(flow_name: str, path: str) -> dict[str, object]:
         state.flow_engine.save(flow_name, Path(path))
         return {"ok": True}
 
-    @mcp.tool()
+    @mcp.tool(description="Export CAN TX/RX events in a time range to BLF file.")
     def log_export_blf(output_path: str, start_iso: str, end_iso: str) -> dict[str, object]:
         start = _parse_dt(start_iso)
         end = _parse_dt(end_iso)
@@ -240,7 +240,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         exported = state.blf_exporter.export(Path(output_path), events)
         return {"ok": True, "output_path": output_path, "frame_count": exported}
 
-    @mcp.tool()
+    @mcp.tool(description="Query recorded events with optional time range and limit.")
     def log_query(
         start_iso: str | None = None,
         end_iso: str | None = None,
@@ -252,11 +252,11 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             item.to_dict() for item in state.event_store.query(start=start, end=end, limit=limit)
         ]
 
-    @mcp.tool()
+    @mcp.tool(description="Get current runtime configuration and source.")
     def config_get() -> dict[str, object]:
         return state.to_dict()
 
-    @mcp.tool()
+    @mcp.tool(description="Update runtime configuration fields and hot-apply them.")
     def config_update(
         can_interface: str | None = None,
         can_channel: str | None = None,
@@ -279,14 +279,14 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         )
         return {"ok": True, **state.to_dict()}
 
-    @mcp.tool()
+    @mcp.tool(description="Load configuration from TOML file and reconfigure runtime.")
     def config_load(path: str) -> dict[str, object]:
         target = Path(path)
         loaded = AppConfig.from_toml_file(target)
         state.reconfigure(loaded, source=str(target))
         return {"ok": True, **state.to_dict()}
 
-    @mcp.tool()
+    @mcp.tool(description="Export current runtime configuration to TOML file.")
     def config_export(path: str) -> dict[str, object]:
         target = Path(path)
         state.export_config(target)
