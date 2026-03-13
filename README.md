@@ -80,6 +80,8 @@ Used as fallback only when `uds.toml` is absent.
 - `flow_load`
 - `flow_register_inline`
 - `flow_list`
+- `flow_template_presets`
+- `flow_init_template`
 - `flow_start`
 - `flow_status`
 - `flow_stop`

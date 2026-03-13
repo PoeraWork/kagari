@@ -13,6 +13,7 @@ from uds_mcp.config import AppConfig
 from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine
 from uds_mcp.flow.schema import FlowDefinition
+from uds_mcp.flow.templates import init_flow_template, list_flow_presets
 from uds_mcp.logging.exporters.blf import BlfExporter
 from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind
@@ -179,6 +180,39 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
     @mcp.tool(description="List all registered flow names.")
     def flow_list() -> list[str]:
         return state.flow_engine.list_flows()
+
+    @mcp.tool(description="List available starter presets for flow initialization.")
+    def flow_template_presets() -> list[str]:
+        return list_flow_presets()
+
+    @mcp.tool(description="Create a starter flow template and optionally write it to YAML.")
+    def flow_init_template(
+        flow_name: str,
+        preset: str = "session_did_read",
+        path: str | None = None,
+        include_dynamic_hook: bool = True,
+        overwrite: bool = False,
+        register: bool = False,
+    ) -> dict[str, object]:
+        target = Path(path) if path else None
+        flow, yaml_text = init_flow_template(
+            flow_name,
+            preset=preset,
+            include_dynamic_hook=include_dynamic_hook,
+            path=target,
+            overwrite=overwrite,
+        )
+        if register:
+            state.flow_engine.register(flow)
+
+        return {
+            "ok": True,
+            "flow": flow.name,
+            "preset": preset,
+            "path": str(target) if target else None,
+            "registered": register,
+            "yaml": yaml_text,
+        }
 
     @mcp.tool(description="Start a registered flow asynchronously.")
     async def flow_start(flow_name: str) -> dict[str, object]:
