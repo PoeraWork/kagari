@@ -311,7 +311,10 @@ def test_transfer_data_builtin_with_message_hook_can_mutate_nth_block() -> None:
                 {
                     "name": "transfer_payload",
                     "transfer_data": {
-                        "data_hex": "AABBCCDD",
+                        "segments": [
+                            {"address": 0x1000, "data_hex": "AABB"},
+                            {"address": 0x2000, "data_hex": "CCDD"},
+                        ],
                         "chunk_size": 1,
                         "block_counter_start": 1,
                     },
@@ -335,5 +338,42 @@ def test_transfer_data_builtin_with_message_hook_can_mutate_nth_block() -> None:
         assert final["status"] == FlowStatus.DONE.value
         requests = [item["request_hex"] for item in final["trace"]]
         assert requests == ["3601AA", "3602BB", "3603EE", "3604DD"]
+
+    asyncio.run(_run())
+
+
+def test_transfer_data_segments_hook_can_generate_segments() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="transfer_data_segments_hook",
+            variables={"payload": "AABBCC"},
+            steps=[
+                {
+                    "name": "transfer_from_hook",
+                    "transfer_data": {
+                        "segments_hook": {
+                            "snippet": (
+                                'p = context["variables"]["payload"]\n'
+                                'result = {"segments": [{"address": 0x1000, "data_hex": p}]}'
+                            )
+                        },
+                        "chunk_size": 1,
+                        "block_counter_start": 1,
+                    },
+                    "expect": {"response_prefix": "76"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        requests = [item["request_hex"] for item in final["trace"]]
+        assert requests == ["3601AA", "3602BB", "3603CC"]
 
     asyncio.run(_run())

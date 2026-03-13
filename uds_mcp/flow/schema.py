@@ -17,19 +17,22 @@ class StepExpect(BaseModel):
     response_prefix: str | None = None
 
 
+class TransferSegment(BaseModel):
+    address: int
+    data_hex: str
+
+
 class TransferDataConfig(BaseModel):
-    data_hex: str | None = None
-    data_file: str | None = None
+    segments: list[TransferSegment] = Field(default_factory=list)
+    segments_hook: HookConfig | None = None
     chunk_size: int = 256
     block_counter_start: int = 1
     request_prefix_hex: str = "36"
 
     @model_validator(mode="after")
     def _validate_source(self) -> TransferDataConfig:
-        has_hex = bool(self.data_hex)
-        has_file = bool(self.data_file)
-        if has_hex == has_file:
-            raise ValueError("transfer_data requires exactly one of data_hex or data_file")
+        if not self.segments and self.segments_hook is None:
+            raise ValueError("transfer_data requires segments or segments_hook")
         if self.chunk_size < 1:
             raise ValueError("transfer_data.chunk_size must be >= 1")
         if not 0 <= self.block_counter_start <= 0xFF:

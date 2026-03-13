@@ -132,15 +132,36 @@ req = context["request_hex"]
 result = {"request_sequence_hex": [req, req]}
 ```
 
-For built-in `0x36` TransferData, you can use step-level `transfer_data` and optional
-single-message `message_hook`:
+For built-in `0x36` TransferData, use standardized `segments` (address + data_hex).
+OEM-specific file parsing should be done by external trusted tools, then flow consumes normalized segments.
+
+Static segments example:
 
 ```yaml
 steps:
 	- name: transfer_payload
 		transfer_data:
-			data_hex: "AABBCCDD"
+			segments:
+				- address: 0x1000
+					data_hex: "AABB"
+				- address: 0x2000
+					data_hex: "CCDD"
 			chunk_size: 1
+			block_counter_start: 1
+```
+
+Dynamic segments via Python hook (avoids huge YAML payloads):
+
+```yaml
+steps:
+	- name: transfer_payload
+		transfer_data:
+			segments_hook:
+				snippet: |
+					# Parse/prepare externally, then return standardized segments
+					p = context["variables"]["payload_hex"]
+					result = {"segments": [{"address": 0x1000, "data_hex": p}]}
+			chunk_size: 256
 			block_counter_start: 1
 		message_hook:
 			snippet: |

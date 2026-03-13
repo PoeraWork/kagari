@@ -9,7 +9,14 @@ from types import MappingProxyType
 from typing import Any
 
 from uds_mcp.extensions.runtime import ExtensionRuntime
-from uds_mcp.flow.schema import FlowDefinition, FlowStep, dump_flow_yaml, load_flow_yaml
+from uds_mcp.flow.schema import (
+    FlowDefinition,
+    FlowStep,
+    TransferSegment,
+    TransferDataConfig,
+    dump_flow_yaml,
+    load_flow_yaml,
+)
 from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind, LogEvent
 from uds_mcp.uds.client import UdsClientService
@@ -176,7 +183,7 @@ class FlowEngine:
                         run.status = FlowStatus.RUNNING
                         self._log_state(run)
 
-                    request_sequence = self._build_step_request_sequence(step)
+                    request_sequence = self._build_step_request_sequence(step, variables, run.trace)
                     base_request_hex = request_sequence[0]
                     if step.before_hook:
                         request_sequence = self._apply_before_hook(
@@ -441,30 +448,90 @@ class FlowEngine:
             )
         )
 
-    def _build_step_request_sequence(self, step: FlowStep) -> list[str]:
+    def _build_step_request_sequence(
+        self,
+        step: FlowStep,
+        variables: dict[str, Any],
+        trace: list[dict[str, Any]],
+    ) -> list[str]:
         if step.transfer_data is None:
             if step.send is None:
                 raise ValueError(f"step {step.name}: send is required when transfer_data is not set")
             return [step.send]
 
         cfg = step.transfer_data
-        payload = _load_transfer_payload(cfg.data_hex, cfg.data_file)
+        segments = list(cfg.segments)
+        if cfg.segments_hook is not None:
+            segments = self._resolve_transfer_segments_from_hook(step.name, cfg, variables, trace)
+
         prefix = _normalize_hex(cfg.request_prefix_hex, field_name="request_prefix_hex").upper()
         if len(prefix) != 2:
             raise ValueError("transfer_data.request_prefix_hex must be exactly one byte")
 
         requests: list[str] = []
         block_counter = cfg.block_counter_start
-        for offset in range(0, len(payload), cfg.chunk_size):
-            chunk = payload[offset : offset + cfg.chunk_size]
-            request_hex = f"{prefix}{block_counter:02X}{chunk.hex().upper()}"
-            requests.append(request_hex)
-            block_counter = (block_counter + 1) & 0xFF
+        for segment in segments:
+            segment_bytes = _segment_data_bytes(segment)
+            for offset in range(0, len(segment_bytes), cfg.chunk_size):
+                chunk = segment_bytes[offset : offset + cfg.chunk_size]
+                request_hex = f"{prefix}{block_counter:02X}{chunk.hex().upper()}"
+                requests.append(request_hex)
+                block_counter = (block_counter + 1) & 0xFF
 
         if not requests:
             raise ValueError(f"step {step.name}: transfer_data payload is empty")
 
         return requests
+
+    def _resolve_transfer_segments_from_hook(
+        self,
+        step_name: str,
+        cfg: TransferDataConfig,
+        variables: dict[str, Any],
+        trace: list[dict[str, Any]],
+    ) -> list[TransferSegment]:
+        hook = cfg.segments_hook
+        if hook is None:
+            return list(cfg.segments)
+
+        context_variables = dict(variables)
+        context = self._build_hook_context(
+            request_hex="",
+            response_hex=None,
+            variables=context_variables,
+            trace=trace,
+            step_name=step_name,
+        )
+        context["transfer_data"] = {
+            "chunk_size": cfg.chunk_size,
+            "block_counter_start": cfg.block_counter_start,
+            "request_prefix_hex": cfg.request_prefix_hex,
+        }
+        updates = self._run_hook(
+            hook.script_path,
+            hook.function_name,
+            hook.snippet,
+            context,
+        )
+        self._apply_variable_updates(variables, context_variables, updates)
+
+        raw_segments = updates.get("segments")
+        if raw_segments is None:
+            raise ValueError("segments_hook must return {'segments': [...]} in hook result")
+        if not isinstance(raw_segments, list):
+            raise TypeError("segments_hook result.segments must be list")
+
+        segments: list[TransferSegment] = []
+        for item in raw_segments:
+            if isinstance(item, TransferSegment):
+                segments.append(item)
+            elif isinstance(item, dict):
+                segments.append(TransferSegment.model_validate(item))
+            else:
+                raise TypeError("segments_hook result.segments items must be dict")
+        if not segments:
+            raise ValueError("segments_hook result.segments must not be empty")
+        return segments
 
 
 def _readonly_trace(trace: list[dict[str, Any]]) -> tuple[MappingProxyType[str, Any], ...]:
@@ -474,13 +541,9 @@ def _readonly_trace(trace: list[dict[str, Any]]) -> tuple[MappingProxyType[str, 
     return tuple(items)
 
 
-def _load_transfer_payload(data_hex: str | None, data_file: str | None) -> bytes:
-    if data_hex is not None:
-        normalized = _normalize_hex(data_hex, field_name="transfer_data.data_hex")
-        return bytes.fromhex(normalized)
-    if data_file is not None:
-        return Path(data_file).read_bytes()
-    raise ValueError("transfer_data requires data_hex or data_file")
+def _segment_data_bytes(segment: TransferSegment) -> bytes:
+    normalized = _normalize_hex(segment.data_hex, field_name="transfer_data.segments[].data_hex")
+    return bytes.fromhex(normalized)
 
 
 def _normalize_hex(value: str, *, field_name: str) -> str:
