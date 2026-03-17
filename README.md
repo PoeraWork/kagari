@@ -75,10 +75,14 @@ Used as fallback only when `uds.toml` is absent.
 - `UDS_MCP_CAN_INTERFACE` default: `socketcan`
 - `UDS_MCP_CAN_CHANNEL` default: `vcan0`
 - `UDS_MCP_CAN_BITRATE` default: `500000`
+- `UDS_MCP_CAN_FD` default: `false`
+- `UDS_MCP_CAN_DATA_BITRATE` optional (used when CAN FD is enabled)
 - `UDS_MCP_UDS_TX_ID` default: `0x7E0`
 - `UDS_MCP_UDS_RX_ID` default: `0x7E8`
 - `UDS_MCP_UDS_TX_FUNCTIONAL_ID` default: `0x7DF`
 - `UDS_MCP_UDS_RX_FUNCTIONAL_ID` default: `0x7E8`
+- `UDS_MCP_UDS_USE_DATA_OPTIMIZATION` default: `false`
+- `UDS_MCP_UDS_MIN_DLC` default: `8`
 - `UDS_MCP_FLOW_REPO` default: `./flows`
 - `UDS_MCP_EXTENSION_WHITELIST` default: `./extensions`
 - `UDS_MCP_EXTENSION_IMPORT_WHITELIST` legacy compatibility option (no longer enforced)

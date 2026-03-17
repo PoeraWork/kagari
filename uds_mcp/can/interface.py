@@ -30,6 +30,10 @@ class CanInterface:
                 "channel": self._config.channel,
                 "bitrate": self._config.bitrate,
             }
+            if self._config.fd:
+                bus_kwargs["fd"] = True
+                if self._config.data_bitrate is not None:
+                    bus_kwargs["data_bitrate"] = self._config.data_bitrate
             try:
                 self._bus = can.Bus(**bus_kwargs)
             except can.exceptions.CanInitializationError as exc:
@@ -38,6 +42,7 @@ class CanInterface:
 
                 retry_kwargs = dict(bus_kwargs)
                 retry_kwargs.pop("bitrate", None)
+                retry_kwargs.pop("data_bitrate", None)
                 self._bus = can.Bus(**retry_kwargs)
 
     @staticmethod
@@ -64,12 +69,16 @@ class CanInterface:
     def send_frame(self, arbitration_id: int, data: bytes, *, is_extended_id: bool = False) -> None:
         self.open()
         assert self._bus is not None
+        use_fd = self._config.fd
+        use_bitrate_switch = use_fd and self._config.data_bitrate is not None
         message = can.Message(
             arbitration_id=arbitration_id,
             data=data,
             is_extended_id=is_extended_id,
             channel=self._config.channel,
             is_rx=False,
+            is_fd=use_fd,
+            bitrate_switch=use_bitrate_switch,
         )
         self._bus.send(message)
         self._event_store.append(

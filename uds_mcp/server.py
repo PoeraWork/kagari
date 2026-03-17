@@ -42,6 +42,8 @@ class AppState:
                 interface=config.can_interface,
                 channel=config.can_channel,
                 bitrate=config.can_bitrate,
+                fd=config.can_fd,
+                data_bitrate=config.can_data_bitrate,
             ),
             self.event_store,
         )
@@ -54,6 +56,9 @@ class AppState:
                 rx_id=config.uds_rx_id,
                 tx_functional_id=config.uds_tx_id_functional,
                 rx_functional_id=config.uds_rx_id_functional,
+                can_fd=config.can_fd,
+                use_data_optimization=config.uds_use_data_optimization,
+                min_dlc=config.uds_min_dlc,
                 tester_present_interval_sec=config.tester_present_interval_sec,
             ),
             self.event_store,
@@ -92,10 +97,14 @@ class AppState:
         can_interface: str | None = None,
         can_channel: str | None = None,
         can_bitrate: int | None = None,
+        can_fd: bool | None = None,
+        can_data_bitrate: int | None = None,
         uds_tx_id: int | None = None,
         uds_rx_id: int | None = None,
         uds_tx_id_functional: int | None = None,
         uds_rx_id_functional: int | None = None,
+        uds_use_data_optimization: bool | None = None,
+        uds_min_dlc: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
         extension_import_whitelist: list[str] | None = None,
@@ -106,6 +115,10 @@ class AppState:
             can_interface=can_interface if can_interface is not None else self.config.can_interface,
             can_channel=can_channel if can_channel is not None else self.config.can_channel,
             can_bitrate=can_bitrate if can_bitrate is not None else self.config.can_bitrate,
+            can_fd=can_fd if can_fd is not None else self.config.can_fd,
+            can_data_bitrate=(
+                can_data_bitrate if can_data_bitrate is not None else self.config.can_data_bitrate
+            ),
             uds_tx_id=uds_tx_id if uds_tx_id is not None else self.config.uds_tx_id,
             uds_rx_id=uds_rx_id if uds_rx_id is not None else self.config.uds_rx_id,
             uds_tx_id_functional=(
@@ -118,6 +131,12 @@ class AppState:
                 if uds_rx_id_functional is not None
                 else self.config.uds_rx_id_functional
             ),
+            uds_use_data_optimization=(
+                uds_use_data_optimization
+                if uds_use_data_optimization is not None
+                else self.config.uds_use_data_optimization
+            ),
+            uds_min_dlc=uds_min_dlc if uds_min_dlc is not None else self.config.uds_min_dlc,
             flow_repo=Path(flow_repo) if flow_repo is not None else self.config.flow_repo,
             extension_whitelist=(
                 Path(extension_whitelist)
@@ -475,10 +494,14 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         can_interface: str | None = None,
         can_channel: str | None = None,
         can_bitrate: int | None = None,
+        can_fd: bool | None = None,
+        can_data_bitrate: int | None = None,
         uds_tx_id: int | None = None,
         uds_rx_id: int | None = None,
         uds_tx_id_functional: int | None = None,
         uds_rx_id_functional: int | None = None,
+        uds_use_data_optimization: bool | None = None,
+        uds_min_dlc: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
         extension_import_whitelist: list[str] | None = None,
@@ -488,10 +511,14 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             can_interface=can_interface,
             can_channel=can_channel,
             can_bitrate=can_bitrate,
+            can_fd=can_fd,
+            can_data_bitrate=can_data_bitrate,
             uds_tx_id=uds_tx_id,
             uds_rx_id=uds_rx_id,
             uds_tx_id_functional=uds_tx_id_functional,
             uds_rx_id_functional=uds_rx_id_functional,
+            uds_use_data_optimization=uds_use_data_optimization,
+            uds_min_dlc=uds_min_dlc,
             flow_repo=flow_repo,
             extension_whitelist=extension_whitelist,
             extension_import_whitelist=extension_import_whitelist,

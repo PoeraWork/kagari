@@ -6,7 +6,7 @@ from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING, Literal
 
 from uds.addressing import AddressingType
-from uds.can import CanAddressingFormat, CanAddressingInformation, PyCanTransportInterface
+from uds.can import CanAddressingFormat, CanAddressingInformation, CanVersion, PyCanTransportInterface
 from uds.client import Client
 from uds.message import UdsMessage, UdsMessageRecord
 
@@ -23,6 +23,9 @@ class UdsConfig:
     rx_id: int
     tx_functional_id: int
     rx_functional_id: int
+    can_fd: bool = False
+    use_data_optimization: bool = False
+    min_dlc: int = 8
     tester_present_interval_sec: float = 2.0
 
 
@@ -48,9 +51,15 @@ class UdsClientService:
             rx_functional_params={"can_id": self._config.rx_functional_id},
             tx_functional_params={"can_id": self._config.tx_functional_id},
         )
+        transport_kwargs: dict[str, object] = {
+            "can_version": CanVersion.CAN_FD if self._config.can_fd else CanVersion.CLASSIC_CAN,
+            "use_data_optimization": self._config.use_data_optimization,
+            "min_dlc": self._config.min_dlc,
+        }
         self._transport = PyCanTransportInterface(
             network_manager=bus,
             addressing_information=addressing_information,
+            **transport_kwargs,
         )
         self._client = Client(transport_interface=self._transport)
         self._tester_present_owners: set[str] = set()

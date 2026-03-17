@@ -76,6 +76,8 @@ class _CliRuntime:
                 interface=config.can_interface,
                 channel=config.can_channel,
                 bitrate=config.can_bitrate,
+                fd=config.can_fd,
+                data_bitrate=config.can_data_bitrate,
             ),
             self.event_store,
         )
@@ -86,6 +88,9 @@ class _CliRuntime:
                 rx_id=config.uds_rx_id,
                 tx_functional_id=config.uds_tx_id_functional,
                 rx_functional_id=config.uds_rx_id_functional,
+                can_fd=config.can_fd,
+                use_data_optimization=config.uds_use_data_optimization,
+                min_dlc=config.uds_min_dlc,
                 tester_present_interval_sec=config.tester_present_interval_sec,
             ),
             self.event_store,

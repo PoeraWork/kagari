@@ -15,9 +15,15 @@ class _FakeNotifier:
 
 
 class _FakeTransport:
-    def __init__(self, network_manager: object, addressing_information: object) -> None:
+    def __init__(
+        self,
+        network_manager: object,
+        addressing_information: object,
+        **configuration_params: object,
+    ) -> None:
         self.network_manager = network_manager
         self.addressing_information = addressing_information
+        self.configuration_params = configuration_params
         self.notifier = _FakeNotifier()
 
 
@@ -103,5 +109,40 @@ def test_tester_present_periodic_send_functional_mode(monkeypatch) -> None:
         assert len(can_if.sent_frames) >= 1
         assert all(frame[0] == 0x7DF for frame in can_if.sent_frames)
         assert all(frame[1] == b"\x3E\x80" for frame in can_if.sent_frames)
+
+    asyncio.run(_run())
+
+
+def test_transport_config_for_can_fd_and_optimization(monkeypatch) -> None:
+    async def _run() -> None:
+        import uds_mcp.uds.client as uds_client_module
+
+        monkeypatch.setattr(uds_client_module, "PyCanTransportInterface", _FakeTransport)
+        monkeypatch.setattr(uds_client_module, "Client", _FakeClient)
+
+        can_if = _FakeCanInterface()
+        service = UdsClientService(
+            can_if,
+            UdsConfig(
+                tx_id=0x70D,
+                rx_id=0x78D,
+                tx_functional_id=0x7DF,
+                rx_functional_id=0x7E8,
+                can_fd=True,
+                use_data_optimization=True,
+                min_dlc=16,
+                tester_present_interval_sec=0.05,
+            ),
+            EventStore(),
+        )
+
+        transport = service._transport  # noqa: SLF001
+        params = transport.configuration_params
+
+        assert str(params["can_version"]) == "CanVersion.CAN_FD"
+        assert params["use_data_optimization"] is True
+        assert params["min_dlc"] == 16
+
+        service.close()
 
     asyncio.run(_run())

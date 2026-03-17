@@ -2,12 +2,16 @@
 interface = "virtual"
 channel = "uds-mcp-test"
 bitrate = 500000
+fd = false
+data_bitrate = 2000000
 
 [uds]
 tx_physical_id = 0x7E0
 rx_physical_id = 0x7E8
 tx_functional_id = 0x7DF
 rx_functional_id = 0x7E8
+use_data_optimization = false
+min_dlc = 8
 
 [app]
 flow_repo = "./examples/flows"
