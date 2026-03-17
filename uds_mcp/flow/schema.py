@@ -45,6 +45,7 @@ class FlowStep(BaseModel):
     name: str
     send: str | None = Field(default=None, description="UDS request hex string")
     timeout_ms: int = 1000
+    delay_ms: int = Field(default=0, ge=0, description="Non-blocking delay after step success")
     expect: StepExpect | None = None
     breakpoint: bool = False
     tester_present: Literal["inherit", "on", "off"] = "inherit"

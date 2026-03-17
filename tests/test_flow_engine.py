@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -377,6 +378,93 @@ def test_transfer_data_segments_hook_can_generate_segments() -> None:
         assert final["status"] == FlowStatus.DONE.value
         requests = [item["request_hex"] for item in final["trace"]]
         assert requests == ["3601AA", "3602BB", "3603CC"]
+
+    asyncio.run(_run())
+
+
+def test_step_delay_is_non_blocking() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="step_delay_flow",
+            steps=[
+                {
+                    "name": "enter_programming_session",
+                    "send": "2711",
+                    "delay_ms": 150,
+                    "expect": {"response_prefix": "6711"},
+                },
+                {
+                    "name": "read_after_delay",
+                    "send": "22ABCD",
+                    "expect": {"response_prefix": "62ABCD"},
+                },
+            ],
+        )
+
+        ticks = 0
+        stop_ticks = asyncio.Event()
+
+        async def _ticker() -> None:
+            nonlocal ticks
+            while not stop_ticks.is_set():
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        engine.register(flow)
+        ticker_task = asyncio.create_task(_ticker())
+        started_at = time.perf_counter()
+        try:
+            run_id = await engine.start(flow.name)
+            final = await _wait_run_done(engine, run_id)
+        finally:
+            stop_ticks.set()
+            await ticker_task
+
+        elapsed = time.perf_counter() - started_at
+        assert final["status"] == FlowStatus.DONE.value
+        assert elapsed >= 0.09
+        assert ticks >= 5
+        assert [item["step"] for item in final["trace"]] == [
+            "enter_programming_session",
+            "read_after_delay",
+        ]
+
+    asyncio.run(_run())
+
+
+def test_stop_requested_during_step_delay_stops_before_next_step() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="step_delay_stop_flow",
+            steps=[
+                {
+                    "name": "enter_programming_session",
+                    "send": "2711",
+                    "delay_ms": 200,
+                    "expect": {"response_prefix": "6711"},
+                },
+                {
+                    "name": "read_after_delay",
+                    "send": "22ABCD",
+                    "expect": {"response_prefix": "62ABCD"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        await asyncio.sleep(0.03)
+        engine.stop(run_id)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.STOPPED.value
+        assert [item["step"] for item in final["trace"]] == ["enter_programming_session"]
 
     asyncio.run(_run())
 

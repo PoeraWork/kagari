@@ -133,8 +133,8 @@ Hook outputs can now include `variables` for write-back. Example snippet:
 ```python
 seed = context["response_hex"][4:]
 result = {
-		"request_hex": "2712" + seed,
-		"variables": {"seed": seed},
+        "request_hex": "2712" + seed,
+        "variables": {"seed": seed},
 }
 ```
 
@@ -153,37 +153,37 @@ Static segments example:
 
 ```yaml
 steps:
-	- name: transfer_payload
-		transfer_data:
-			segments:
-				- address: 0x1000
-					data_hex: "AABB"
-				- address: 0x2000
-					data_hex: "CCDD"
-			chunk_size: 1
-			block_counter_start: 1
-			check_each_response: true
+    - name: transfer_payload
+        transfer_data:
+            segments:
+                - address: 0x1000
+                    data_hex: "AABB"
+                - address: 0x2000
+                    data_hex: "CCDD"
+            chunk_size: 1
+            block_counter_start: 1
+            check_each_response: true
 ```
 
 Dynamic segments via Python hook (avoids huge YAML payloads):
 
 ```yaml
 steps:
-	- name: transfer_payload
-		transfer_data:
-			segments_hook:
-				snippet: |
-					# Parse/prepare externally, then return standardized segments
-					p = context["variables"]["payload_hex"]
-					result = {"segments": [{"address": 0x1000, "data_hex": p}]}
-			chunk_size: 256
-			block_counter_start: 1
-		message_hook:
-			snippet: |
-				if context["message_index"] == 2:
-					result = {"request_hex": "3603EE"}
-				else:
-					result = {}
+    - name: transfer_payload
+        transfer_data:
+            segments_hook:
+                snippet: |
+                    # Parse/prepare externally, then return standardized segments
+                    p = context["variables"]["payload_hex"]
+                    result = {"segments": [{"address": 0x1000, "data_hex": p}]}
+            chunk_size: 256
+            block_counter_start: 1
+        message_hook:
+            snippet: |
+                if context["message_index"] == 2:
+                    result = {"request_hex": "3603EE"}
+                else:
+                    result = {}
 ```
 
 `message_hook` context includes `message_index`, `message_total`, `step_name`, `request_hex`,
@@ -230,25 +230,45 @@ Each step can override with `tester_present`:
 - `on` (enable keepalive for this step)
 - `off` (disable flow-level keepalive for this step)
 
+Each step also supports `delay_ms` for a non-blocking post-step wait. This is useful for
+cases like `1002 -> 5002`, where the ECU acknowledges reset immediately but still needs
+extra boot time before the next request.
+
 Example:
 
 ```yaml
 name: security_access_flow
 tester_present_policy: during_flow
 steps:
-	- name: request_seed
-		send: "2711"
-		tester_present: inherit
-	- name: send_key_without_tp
-		send: "2712ABCD"
-		tester_present: off
+    - name: request_seed
+        send: "2711"
+        tester_present: inherit
+    - name: send_key_without_tp
+        send: "2712ABCD"
+        tester_present: off
+```
+
+Boot/reset delay example:
+
+```yaml
+name: bootloader_entry
+steps:
+    - name: ecu_reset_into_boot
+        send: "1002"
+        expect:
+            response_prefix: "5002"
+        delay_ms: 300
+    - name: request_seed_after_boot
+        send: "2701"
+        expect:
+            response_prefix: "6701"
 ```
 
 ## SecurityAccess Helpers
 
 - `crypto_aes_cmac(key_hex, data_hex, out_len=16)`: generic AES-CMAC helper.
 - `security27_build_key(level, seed_hex, key_hex, out_len=None, include_level_in_cmac=False)`:
-	build derived key and `27 xx + key` request payload for service `0x27` flows.
+  build derived key and `27 xx + key` request payload for service `0x27` flows.
 
 ## AI Collaboration Notes
 
@@ -276,4 +296,4 @@ Note: reconfiguration is blocked while any flow run is `RUNNING` or `PAUSED`.
 ## Notes
 
 - `UdsClientService` now uses full `py-uds` client stack (`Client`,
-	`PyCanTransportInterface`, `CanAddressingInformation`) on top of `python-can` bus.
+  `PyCanTransportInterface`, `CanAddressingInformation`) on top of `python-can` bus.

@@ -17,6 +17,7 @@ def test_dump_and_load_flow_yaml(tmp_path: Path) -> None:
                 "name": "session",
                 "send": "1003",
                 "timeout_ms": 1000,
+                "delay_ms": 250,
                 "expect": {"response_prefix": "5003"},
             }
         ],
@@ -28,8 +29,23 @@ def test_dump_and_load_flow_yaml(tmp_path: Path) -> None:
     assert loaded.name == "demo"
     assert loaded.steps[0].name == "session"
     assert loaded.steps[0].send == "1003"
+    assert loaded.steps[0].delay_ms == 250
     assert loaded.steps[0].expect is not None
     assert loaded.steps[0].expect.response_prefix == "5003"
+
+
+def test_step_delay_must_be_non_negative() -> None:
+    with pytest.raises(ValueError):
+        FlowDefinition(
+            name="demo_negative_delay",
+            steps=[
+                {
+                    "name": "session",
+                    "send": "1003",
+                    "delay_ms": -1,
+                }
+            ],
+        )
 
 
 def test_transfer_data_requires_non_empty_segments() -> None:

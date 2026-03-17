@@ -150,6 +150,15 @@ class FlowEngine:
     async def inject_once(self, request_hex: str, timeout_ms: int) -> dict[str, Any]:
         return await self._uds_client.send(request_hex, timeout_ms=timeout_ms)
 
+    async def _wait_step_delay(self, run: FlowRun, delay_ms: int) -> None:
+        remaining_sec = delay_ms / 1000
+        while remaining_sec > 0:
+            if run.stop_requested:
+                return
+            sleep_sec = min(remaining_sec, 0.05)
+            await asyncio.sleep(sleep_sec)
+            remaining_sec -= sleep_sec
+
     async def _run_flow(self, run: FlowRun, flow: FlowDefinition) -> None:
         flow_path = self._flow_sources.get(flow.name)
         flow_dir = flow_path.parent if flow_path is not None else Path.cwd().resolve()
@@ -287,6 +296,13 @@ class FlowEngine:
                         raise ValueError(
                             f"step {step.name}: expect prefix {expected_prefix}, got {response_hex}"
                         )
+
+                    if step.delay_ms > 0:
+                        await self._wait_step_delay(run, step.delay_ms)
+                        if run.stop_requested:
+                            run.status = FlowStatus.STOPPED
+                            self._log_state(run)
+                            return
                 finally:
                     if step_owner_active:
                         await self._uds_client.stop_tester_present_owner("flow-step")
