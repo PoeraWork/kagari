@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING, Literal
 
 from uds.addressing import AddressingType
@@ -55,6 +55,8 @@ class UdsClientService:
         self._client = Client(transport_interface=self._transport)
         self._tester_present_owners: set[str] = set()
         self._tester_present_mode: AddressingType | None = None
+        self._tester_present_stop_event: Event | None = None
+        self._tester_present_thread: Thread | None = None
 
     async def send(
         self,
@@ -97,15 +99,17 @@ class UdsClientService:
         return await asyncio.to_thread(self._tester_present_status_sync)
 
     def close(self) -> None:
+        thread_to_join: Thread | None = None
         with self._client_lock:
-            if self._client.is_tester_present_sent:
-                self._client.stop_tester_present()
+            thread_to_join = self._stop_tester_present_worker_locked()
             self._tester_present_owners.clear()
-            self._tester_present_mode = None
 
             notifier = getattr(self._transport, "notifier", None)
             if notifier is not None and hasattr(notifier, "stop"):
                 notifier.stop()
+
+        if thread_to_join is not None:
+            thread_to_join.join(timeout=1.0)
 
     def _send_sync(
         self, payload: bytes, timeout_ms: int, addressing_mode: str
@@ -206,13 +210,11 @@ class UdsClientService:
         with self._client_lock:
             self._tester_present_owners.add(owner)
 
-            if self._client.is_tester_present_sent:
+            if self._tester_present_thread is not None:
                 active_mode = self._tester_present_mode or AddressingType.PHYSICAL
                 return self._tester_present_status_payload(active_mode)
 
-            self._client.s3_client = self._config.tester_present_interval_sec * 1000.0
-            self._client.start_tester_present(addressing_type=requested, sprmib=True)
-            self._tester_present_mode = requested
+            self._start_tester_present_worker_locked(requested)
             return self._tester_present_status_payload(requested)
 
     def _release_tester_present_sync(self, owner: str) -> dict[str, object]:
@@ -223,14 +225,17 @@ class UdsClientService:
                 active_mode = self._tester_present_mode or AddressingType.PHYSICAL
                 return self._tester_present_status_payload(active_mode)
 
-            if self._client.is_tester_present_sent:
-                self._client.stop_tester_present()
-            self._tester_present_mode = None
+            thread_to_join = self._stop_tester_present_worker_locked()
+
+        if thread_to_join is not None:
+            thread_to_join.join(timeout=1.0)
+
+        with self._client_lock:
             return self._tester_present_status_payload(None)
 
     def _tester_present_status_sync(self) -> dict[str, object]:
         with self._client_lock:
-            mode = self._tester_present_mode if self._client.is_tester_present_sent else None
+            mode = self._tester_present_mode if self._tester_present_thread is not None else None
             return self._tester_present_status_payload(mode)
 
     def _tester_present_status_payload(self, mode: AddressingType | None) -> dict[str, object]:
@@ -238,11 +243,66 @@ class UdsClientService:
         if mode is not None:
             mode_label = "functional" if mode == AddressingType.FUNCTIONAL else "physical"
         return {
-            "running": bool(self._client.is_tester_present_sent),
+            "running": self._tester_present_thread is not None,
             "addressing_mode": mode_label,
             "owners": sorted(self._tester_present_owners),
             "interval_sec": self._config.tester_present_interval_sec,
         }
+
+    def _start_tester_present_worker_locked(self, mode: AddressingType) -> None:
+        interval_sec = max(self._config.tester_present_interval_sec, 0.05)
+        stop_event = Event()
+        thread = Thread(
+            target=self._tester_present_loop,
+            args=(stop_event, mode, interval_sec),
+            name="uds-mcp-tester-present",
+            daemon=True,
+        )
+        self._tester_present_mode = mode
+        self._tester_present_stop_event = stop_event
+        self._tester_present_thread = thread
+        thread.start()
+
+    def _stop_tester_present_worker_locked(self) -> Thread | None:
+        thread = self._tester_present_thread
+        if thread is None:
+            self._tester_present_mode = None
+            self._tester_present_stop_event = None
+            return None
+        stop_event = self._tester_present_stop_event
+        self._tester_present_thread = None
+        self._tester_present_mode = None
+        self._tester_present_stop_event = None
+        if stop_event is not None:
+            stop_event.set()
+        return thread
+
+    def _tester_present_loop(
+        self,
+        stop_event: Event,
+        addressing_type: AddressingType,
+        interval_sec: float,
+    ) -> None:
+        arbitration_id = (
+            self._config.tx_functional_id
+            if addressing_type == AddressingType.FUNCTIONAL
+            else self._config.tx_id
+        )
+
+        while not stop_event.wait(interval_sec):
+            try:
+                # 0x80 suppresses positive response, so this should be fire-and-forget.
+                self._can.send_frame(arbitration_id, b"\x3E\x80")
+            except Exception as exc:
+                self._event_store.append(
+                    LogEvent(
+                        kind=EventKind.ERROR,
+                        payload={
+                            "source": "uds_client",
+                            "error": f"tester_present send failed: {exc}",
+                        },
+                    )
+                )
 
 
 def _parse_addressing_mode(value: str) -> AddressingType:
