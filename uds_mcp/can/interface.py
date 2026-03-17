@@ -25,11 +25,28 @@ class CanInterface:
         with self._lock:
             if self._bus is not None:
                 return
-            self._bus = can.Bus(
-                interface=self._config.interface,
-                channel=self._config.channel,
-                bitrate=self._config.bitrate,
-            )
+            bus_kwargs: dict[str, object] = {
+                "interface": self._config.interface,
+                "channel": self._config.channel,
+                "bitrate": self._config.bitrate,
+            }
+            try:
+                self._bus = can.Bus(**bus_kwargs)
+            except can.exceptions.CanInitializationError as exc:
+                if not self._should_retry_with_active_settings(exc):
+                    raise
+
+                retry_kwargs = dict(bus_kwargs)
+                retry_kwargs.pop("bitrate", None)
+                self._bus = can.Bus(**retry_kwargs)
+
+    @staticmethod
+    def _should_retry_with_active_settings(exc: can.exceptions.CanInitializationError) -> bool:
+        message = str(exc).lower()
+        return (
+            "another application might have set incompatible settings" in message
+            and "currently active settings" in message
+        )
 
     def get_bus(self) -> can.BusABC:
         """Get an opened python-can bus instance."""
