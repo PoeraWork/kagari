@@ -234,6 +234,9 @@ Each step also supports `delay_ms` for a non-blocking post-step wait. This is us
 cases like `1002 -> 5002`, where the ECU acknowledges reset immediately but still needs
 extra boot time before the next request.
 
+You can also define a native wait-only step by setting only `delay_ms` (no `send`, no
+`transfer_data`, no `sub_flow`). Step-level `tester_present` still applies during this wait.
+
 Example:
 
 ```yaml
@@ -262,6 +265,21 @@ steps:
         send: "2701"
         expect:
             response_prefix: "6701"
+```
+
+Wait-only step example:
+
+```yaml
+name: boot_wait_flow
+tester_present_policy: off
+steps:
+        - name: wait_boot
+            delay_ms: 1500
+            tester_present: on
+        - name: read_seed
+            send: "2701"
+            expect:
+                response_prefix: "6701"
 ```
 
 ## SecurityAccess Helpers

@@ -48,7 +48,11 @@ class FlowStep(BaseModel):
     sub_flow: str | None = None
     repeat: int = Field(default=1, ge=1)
     timeout_ms: int = 1000
-    delay_ms: int = Field(default=0, ge=0, description="Non-blocking delay after step success")
+    delay_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Non-blocking delay after step success; if used alone it becomes a wait-only step",
+    )
     expect: StepExpect | None = None
     breakpoint: bool = False
     tester_present: Literal["inherit", "on", "off"] = "inherit"
@@ -63,6 +67,8 @@ class FlowStep(BaseModel):
         sources = [self.send is not None, self.transfer_data is not None, self.sub_flow is not None]
         count = sum(sources)
         if count == 0:
+            if self.delay_ms > 0:
+                return self
             raise ValueError("step requires exactly one of send, transfer_data, or sub_flow")
         if count > 1:
             raise ValueError("step requires exactly one of send, transfer_data, or sub_flow")

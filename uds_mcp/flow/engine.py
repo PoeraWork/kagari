@@ -373,6 +373,28 @@ class FlowEngine:
                 run.status = FlowStatus.RUNNING
                 self._log_state(run)
 
+            if step.send is None and step.transfer_data is None:
+                if step.delay_ms <= 0:
+                    raise ValueError(f"step {step.name}: wait-only step requires delay_ms > 0")
+
+                wait_item: dict[str, Any] = {
+                    "step": step.name,
+                    "action": "wait",
+                    "delay_ms": step.delay_ms,
+                    "repeat_index": repeat_index,
+                    "sub_flow_depth": depth,
+                    "sub_flow_name": sub_flow_name,
+                    "addressing_mode": addressing_mode,
+                }
+                run.trace.append(wait_item)
+                self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=wait_item))
+
+                await self._wait_step_delay(run, step.delay_ms)
+                if run.stop_requested:
+                    run.status = FlowStatus.STOPPED
+                    self._log_state(run)
+                return
+
             request_sequence = self._build_step_request_sequence(
                 step,
                 variables,
@@ -381,7 +403,7 @@ class FlowEngine:
                 flow_path,
             )
             base_request_hex = request_sequence[0]
-            previous_response_hex = run.trace[-1]["response_hex"] if run.trace else None
+            previous_response_hex = run.trace[-1].get("response_hex") if run.trace else None
             if step.before_hook:
                 request_sequence = self._apply_before_hook(
                     step.before_hook.script_path,

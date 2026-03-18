@@ -478,6 +478,82 @@ def test_stop_requested_during_step_delay_stops_before_next_step() -> None:
     asyncio.run(_run())
 
 
+def test_wait_only_step_runs_and_records_trace() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="wait_only_flow",
+            steps=[
+                {
+                    "name": "wait_boot",
+                    "delay_ms": 120,
+                    "tester_present": "on",
+                },
+                {
+                    "name": "read_after_wait",
+                    "send": "22ABCD",
+                    "expect": {"response_prefix": "62ABCD"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        started_at = time.perf_counter()
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+        elapsed = time.perf_counter() - started_at
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert elapsed >= 0.08
+        trace = engine.get_trace(run_id)
+        assert trace[0]["step"] == "wait_boot"
+        assert trace[0]["action"] == "wait"
+        assert trace[0]["delay_ms"] == 120
+        assert trace[1]["step"] == "read_after_wait"
+
+    asyncio.run(_run())
+
+
+def test_wait_only_step_tester_present_off_suspends_flow_owner() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="wait_tp_off_flow",
+            tester_present_policy="during_flow",
+            steps=[
+                {
+                    "name": "wait_without_tp",
+                    "delay_ms": 80,
+                    "tester_present": "off",
+                },
+                {
+                    "name": "normal_step",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert uds.tp_events == [
+            ("start", "flow-run"),
+            ("stop", "flow-run"),
+            ("start", "flow-run"),
+            ("stop", "flow-run"),
+        ]
+
+    asyncio.run(_run())
+
+
 def test_transfer_data_fails_fast_on_unexpected_response_by_default() -> None:
     async def _run() -> None:
         runtime = ExtensionRuntime([Path("examples/extensions").resolve()])

@@ -184,6 +184,16 @@ class TestMutualExclusivity:
                 steps=[{"name": "s"}],
             )
 
+    def test_wait_only_step_with_delay_is_allowed(self) -> None:
+        flow = FlowDefinition(
+            name="wait_only",
+            steps=[{"name": "wait_boot", "delay_ms": 300}],
+        )
+        assert flow.steps[0].send is None
+        assert flow.steps[0].transfer_data is None
+        assert flow.steps[0].sub_flow is None
+        assert flow.steps[0].delay_ms == 300
+
 
 class TestSubFlowHookRestrictions:
     """sub_flow step must not have before_hook, message_hook, after_hook, expect."""
