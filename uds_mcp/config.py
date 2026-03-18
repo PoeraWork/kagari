@@ -21,6 +21,7 @@ class AppConfig:
     uds_tx_id_functional: int = 0x7DF
     uds_rx_id_functional: int = 0x7E8
     uds_use_data_optimization: bool = False
+    uds_dlc: int = 8
     uds_min_dlc: int = 8
     flow_repo: Path = Path("./flows")
     extension_whitelist: Path = Path("./extensions")
@@ -49,6 +50,7 @@ class AppConfig:
             uds_use_data_optimization=_parse_bool_env(
                 os.getenv("UDS_MCP_UDS_USE_DATA_OPTIMIZATION", "false")
             ),
+            uds_dlc=int(os.getenv("UDS_MCP_UDS_DLC", "8")),
             uds_min_dlc=int(os.getenv("UDS_MCP_UDS_MIN_DLC", "8")),
             flow_repo=Path(os.getenv("UDS_MCP_FLOW_REPO", "./flows")),
             extension_whitelist=Path(os.getenv("UDS_MCP_EXTENSION_WHITELIST", "./extensions")),
@@ -116,6 +118,7 @@ class AppConfig:
                 uds_table.get("use_data_optimization", False),
                 field_name="[uds].use_data_optimization",
             ),
+            uds_dlc=_parse_int_like(uds_table.get("dlc", 8), field_name="[uds].dlc"),
             uds_min_dlc=_parse_int_like(uds_table.get("min_dlc", 8), field_name="[uds].min_dlc"),
             flow_repo=Path(str(app_table.get("flow_repo", "./flows"))),
             extension_whitelist=Path(str(app_table.get("extension_whitelist", "./extensions"))),
@@ -146,6 +149,7 @@ class AppConfig:
             f"tx_functional_id = {hex(self.uds_tx_id_functional)}\n"
             f"rx_functional_id = {hex(self.uds_rx_id_functional)}\n\n"
             f"use_data_optimization = {'true' if self.uds_use_data_optimization else 'false'}\n"
+            f"dlc = {self.uds_dlc}\n"
             f"min_dlc = {self.uds_min_dlc}\n\n"
             "[app]\n"
             f"flow_repo = {self.flow_repo.as_posix()!r}\n"
@@ -174,6 +178,7 @@ class AppConfig:
                 "tx_functional_id": self.uds_tx_id_functional,
                 "rx_functional_id": self.uds_rx_id_functional,
                 "use_data_optimization": self.uds_use_data_optimization,
+                "dlc": self.uds_dlc,
                 "min_dlc": self.uds_min_dlc,
             },
             "app": {

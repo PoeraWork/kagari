@@ -11,6 +11,7 @@ rx_physical_id = 0x7E8
 tx_functional_id = 0x7DF
 rx_functional_id = 0x7E8
 use_data_optimization = false
+dlc = 8
 min_dlc = 8
 
 [app]

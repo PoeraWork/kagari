@@ -94,6 +94,7 @@ class _CliRuntime:
                 rx_functional_id=config.uds_rx_id_functional,
                 can_fd=config.can_fd,
                 use_data_optimization=config.uds_use_data_optimization,
+                dlc=config.uds_dlc,
                 min_dlc=config.uds_min_dlc,
                 tester_present_interval_sec=config.tester_present_interval_sec,
             ),

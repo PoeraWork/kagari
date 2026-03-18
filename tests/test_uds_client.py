@@ -220,6 +220,7 @@ def test_transport_config_for_can_fd_and_optimization(monkeypatch) -> None:
                 rx_functional_id=0x7E8,
                 can_fd=True,
                 use_data_optimization=True,
+                dlc=32,
                 min_dlc=16,
                 tester_present_interval_sec=0.1,
             ),
@@ -231,11 +232,106 @@ def test_transport_config_for_can_fd_and_optimization(monkeypatch) -> None:
 
         assert str(params["can_version"]) == "CanVersion.CAN_FD"
         assert params["use_data_optimization"] is True
-        assert params["min_dlc"] == 16
+        assert params["dlc"] == 13
+        assert params["min_dlc"] == 10
 
         service.close()
 
     asyncio.run(_run())
+
+
+def test_transport_config_fixed_dlc_without_optimization(monkeypatch) -> None:
+    async def _run() -> None:
+        import uds_mcp.uds.client as uds_client_module
+
+        monkeypatch.setattr(uds_client_module, "PyCanTransportInterface", _FakeTransport)
+        monkeypatch.setattr(uds_client_module, "Client", _FakeClient)
+
+        can_if = _FakeCanInterface()
+        service = UdsClientService(
+            can_if,
+            UdsConfig(
+                tx_id=0x70D,
+                rx_id=0x78D,
+                tx_functional_id=0x7DF,
+                rx_functional_id=0x7E8,
+                can_fd=True,
+                use_data_optimization=False,
+                dlc=24,
+                min_dlc=16,
+                tester_present_interval_sec=0.1,
+            ),
+            EventStore(),
+        )
+
+        params = service._transport.configuration_params  # noqa: SLF001
+
+        assert str(params["can_version"]) == "CanVersion.CAN_FD"
+        assert params["use_data_optimization"] is False
+        assert params["dlc"] == 12
+        assert "min_dlc" not in params
+
+        service.close()
+
+    asyncio.run(_run())
+
+
+def test_transport_config_raises_for_non_discrete_dlc_bytes(monkeypatch) -> None:
+    import uds_mcp.uds.client as uds_client_module
+
+    monkeypatch.setattr(uds_client_module, "PyCanTransportInterface", _FakeTransport)
+    monkeypatch.setattr(uds_client_module, "Client", _FakeClient)
+
+    can_if = _FakeCanInterface()
+    try:
+        UdsClientService(
+            can_if,
+            UdsConfig(
+                tx_id=0x70D,
+                rx_id=0x78D,
+                tx_functional_id=0x7DF,
+                rx_functional_id=0x7E8,
+                can_fd=True,
+                use_data_optimization=False,
+                dlc=10,
+                min_dlc=8,
+                tester_present_interval_sec=0.1,
+            ),
+            EventStore(),
+        )
+    except ValueError as exc:
+        assert "dlc=10" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for non-discrete dlc bytes")
+
+
+def test_transport_config_raises_when_min_dlc_exceeds_dlc(monkeypatch) -> None:
+    import uds_mcp.uds.client as uds_client_module
+
+    monkeypatch.setattr(uds_client_module, "PyCanTransportInterface", _FakeTransport)
+    monkeypatch.setattr(uds_client_module, "Client", _FakeClient)
+
+    can_if = _FakeCanInterface()
+    try:
+        UdsClientService(
+            can_if,
+            UdsConfig(
+                tx_id=0x70D,
+                rx_id=0x78D,
+                tx_functional_id=0x7DF,
+                rx_functional_id=0x7E8,
+                can_fd=True,
+                use_data_optimization=True,
+                dlc=16,
+                min_dlc=24,
+                tester_present_interval_sec=0.1,
+            ),
+            EventStore(),
+        )
+    except ValueError as exc:
+        assert "min_dlc must be less than or equal to dlc" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError when min_dlc exceeds dlc")
 
 
 def test_send_restores_p3_after_temporary_timeout_override(monkeypatch) -> None:

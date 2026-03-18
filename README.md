@@ -82,7 +82,8 @@ Used as fallback only when `uds.toml` is absent.
 - `UDS_MCP_UDS_TX_FUNCTIONAL_ID` default: `0x7DF`
 - `UDS_MCP_UDS_RX_FUNCTIONAL_ID` default: `0x7E8`
 - `UDS_MCP_UDS_USE_DATA_OPTIMIZATION` default: `false`
-- `UDS_MCP_UDS_MIN_DLC` default: `8`
+- `UDS_MCP_UDS_DLC` default: `8` (data bytes, discrete CAN FD lengths only: `8/12/16/20/24/32/48/64`)
+- `UDS_MCP_UDS_MIN_DLC` default: `8` (data bytes; used only when `UDS_MCP_UDS_USE_DATA_OPTIMIZATION=true`)
 - `UDS_MCP_FLOW_REPO` default: `./flows`
 - `UDS_MCP_EXTENSION_WHITELIST` default: `./extensions`
 - `UDS_MCP_EXTENSION_IMPORT_WHITELIST` legacy compatibility option (no longer enforced)

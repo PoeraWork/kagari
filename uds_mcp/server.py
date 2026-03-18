@@ -58,6 +58,7 @@ class AppState:
                 rx_functional_id=config.uds_rx_id_functional,
                 can_fd=config.can_fd,
                 use_data_optimization=config.uds_use_data_optimization,
+                dlc=config.uds_dlc,
                 min_dlc=config.uds_min_dlc,
                 tester_present_interval_sec=config.tester_present_interval_sec,
             ),
@@ -104,6 +105,7 @@ class AppState:
         uds_tx_id_functional: int | None = None,
         uds_rx_id_functional: int | None = None,
         uds_use_data_optimization: bool | None = None,
+        uds_dlc: int | None = None,
         uds_min_dlc: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
@@ -136,6 +138,7 @@ class AppState:
                 if uds_use_data_optimization is not None
                 else self.config.uds_use_data_optimization
             ),
+            uds_dlc=uds_dlc if uds_dlc is not None else self.config.uds_dlc,
             uds_min_dlc=uds_min_dlc if uds_min_dlc is not None else self.config.uds_min_dlc,
             flow_repo=Path(flow_repo) if flow_repo is not None else self.config.flow_repo,
             extension_whitelist=(
@@ -523,6 +526,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         uds_tx_id_functional: int | None = None,
         uds_rx_id_functional: int | None = None,
         uds_use_data_optimization: bool | None = None,
+        uds_dlc: int | None = None,
         uds_min_dlc: int | None = None,
         flow_repo: str | None = None,
         extension_whitelist: str | None = None,
@@ -540,6 +544,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             uds_tx_id_functional=uds_tx_id_functional,
             uds_rx_id_functional=uds_rx_id_functional,
             uds_use_data_optimization=uds_use_data_optimization,
+            uds_dlc=uds_dlc,
             uds_min_dlc=uds_min_dlc,
             flow_repo=flow_repo,
             extension_whitelist=extension_whitelist,

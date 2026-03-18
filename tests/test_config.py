@@ -22,6 +22,7 @@ def test_app_config_from_toml_dict() -> None:
                 "tx_functional_id": 0x7DF,
                 "rx_functional_id": 0x7E9,
                 "use_data_optimization": True,
+                "dlc": 32,
                 "min_dlc": 16,
             },
             "app": {
@@ -43,6 +44,7 @@ def test_app_config_from_toml_dict() -> None:
     assert cfg.uds_tx_id_functional == 0x7DF
     assert cfg.uds_rx_id_functional == 0x7E9
     assert cfg.uds_use_data_optimization is True
+    assert cfg.uds_dlc == 32
     assert cfg.uds_min_dlc == 16
     assert cfg.flow_repo == Path("./flows2")
     assert cfg.extension_whitelist == Path("./extensions2")
@@ -62,6 +64,7 @@ def test_app_config_to_toml_roundtrip() -> None:
         uds_tx_id_functional=0x7DF,
         uds_rx_id_functional=0x7E8,
         uds_use_data_optimization=True,
+        uds_dlc=32,
         uds_min_dlc=16,
         flow_repo=Path("./flows"),
         extension_whitelist=Path("./extensions"),
@@ -81,6 +84,7 @@ def test_app_config_to_toml_roundtrip() -> None:
     assert parsed["uds"]["tx_functional_id"] == 0x7DF
     assert parsed["uds"]["rx_functional_id"] == 0x7E8
     assert parsed["uds"]["use_data_optimization"] is True
+    assert parsed["uds"]["dlc"] == 32
     assert parsed["uds"]["min_dlc"] == 16
     assert parsed["app"]["extension_import_whitelist"] == ["Crypto"]
 
@@ -102,6 +106,7 @@ rx_physical_id = 0x709
 tx_functional_id = 0x7df
 rx_functional_id = 0x7ea
 use_data_optimization = true
+dlc = 32
 min_dlc = 16
 
 [app]
@@ -125,6 +130,7 @@ tester_present_interval_sec = 2.0
     assert cfg.uds_tx_id_functional == 0x7DF
     assert cfg.uds_rx_id_functional == 0x7EA
     assert cfg.uds_use_data_optimization is True
+    assert cfg.uds_dlc == 32
     assert cfg.uds_min_dlc == 16
     assert cfg.flow_repo == (tmp_path / "flows").resolve()
     assert cfg.extension_whitelist == (tmp_path / "extensions").resolve()
@@ -141,6 +147,7 @@ def test_load_config_fallback_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("UDS_MCP_UDS_TX_FUNCTIONAL_ID", "0x7DF")
     monkeypatch.setenv("UDS_MCP_UDS_RX_FUNCTIONAL_ID", "0x7EA")
     monkeypatch.setenv("UDS_MCP_UDS_USE_DATA_OPTIMIZATION", "true")
+    monkeypatch.setenv("UDS_MCP_UDS_DLC", "24")
     monkeypatch.setenv("UDS_MCP_UDS_MIN_DLC", "12")
     monkeypatch.setenv("UDS_MCP_EXTENSION_IMPORT_WHITELIST", "Crypto,hashlib")
 
@@ -154,6 +161,7 @@ def test_load_config_fallback_env(monkeypatch, tmp_path: Path) -> None:
     assert cfg.uds_tx_id_functional == 0x7DF
     assert cfg.uds_rx_id_functional == 0x7EA
     assert cfg.uds_use_data_optimization is True
+    assert cfg.uds_dlc == 24
     assert cfg.uds_min_dlc == 12
     assert cfg.extension_import_whitelist == ("Crypto", "hashlib")
     assert source == "env"

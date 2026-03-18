@@ -12,6 +12,7 @@ from uds.can import (
     CanVersion,
     PyCanTransportInterface,
 )
+from uds.can.frame import CanDlcHandler
 from uds.client import Client
 from uds.message import UdsMessage, UdsMessageRecord
 
@@ -30,8 +31,25 @@ class UdsConfig:
     rx_functional_id: int
     can_fd: bool = False
     use_data_optimization: bool = False
+    dlc: int = 8
     min_dlc: int = 8
     tester_present_interval_sec: float = 2.0
+
+    def __post_init__(self) -> None:
+        _validate_discrete_dlc_bytes("dlc", self.dlc)
+
+        if self.use_data_optimization:
+            _validate_discrete_dlc_bytes("min_dlc", self.min_dlc)
+            if self.min_dlc > self.dlc:
+                raise ValueError(
+                    "min_dlc must be less than or equal to dlc when use_data_optimization=true"
+                )
+
+        if not self.can_fd:
+            if self.dlc > 8:
+                raise ValueError("dlc > 8 requires CAN FD")
+            if self.use_data_optimization and self.min_dlc > 8:
+                raise ValueError("min_dlc > 8 requires CAN FD")
 
 
 class UdsClientService:
@@ -59,8 +77,13 @@ class UdsClientService:
         transport_kwargs: dict[str, object] = {
             "can_version": CanVersion.CAN_FD if self._config.can_fd else CanVersion.CLASSIC_CAN,
             "use_data_optimization": self._config.use_data_optimization,
-            "min_dlc": self._config.min_dlc,
+            "dlc": _encode_dlc_from_bytes(self._config.dlc, field_name="dlc"),
         }
+        if self._config.use_data_optimization:
+            transport_kwargs["min_dlc"] = _encode_dlc_from_bytes(
+                self._config.min_dlc,
+                field_name="min_dlc",
+            )
         self._transport = PyCanTransportInterface(
             network_manager=bus,
             addressing_information=addressing_information,
@@ -330,3 +353,16 @@ def _parse_addressing_mode(value: str) -> AddressingType:
     if normalized == "functional":
         return AddressingType.FUNCTIONAL
     raise ValueError("addressing_mode must be 'physical' or 'functional'")
+
+
+def _encode_dlc_from_bytes(value: int, *, field_name: str) -> int:
+    try:
+        return CanDlcHandler.encode_dlc(value)
+    except Exception as exc:
+        raise ValueError(
+            f"{field_name}={value} is not a valid CAN(-FD) discrete data length in bytes"
+        ) from exc
+
+
+def _validate_discrete_dlc_bytes(field_name: str, value: int) -> None:
+    _encode_dlc_from_bytes(value, field_name=field_name)
