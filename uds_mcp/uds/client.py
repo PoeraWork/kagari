@@ -116,6 +116,7 @@ class UdsClientService:
         thread_to_join: Thread | None = None
         with self._client_lock:
             thread_to_join = self._stop_tester_present_worker_locked()
+            self._tester_present_mode = None
             self._tester_present_owners.clear()
 
             notifier = getattr(self._transport, "notifier", None)
@@ -134,6 +135,8 @@ class UdsClientService:
             previous_timeouts = (
                 self._client.p2_client_timeout,
                 self._client.p2_ext_client_timeout,
+                self._client.p3_client_physical,
+                self._client.p3_client_functional,
                 self._client.p6_client_timeout,
                 self._client.p6_ext_client_timeout,
             )
@@ -150,6 +153,8 @@ class UdsClientService:
                 (
                     self._client.p2_client_timeout,
                     self._client.p2_ext_client_timeout,
+                    self._client.p3_client_physical,
+                    self._client.p3_client_functional,
                     self._client.p6_client_timeout,
                     self._client.p6_ext_client_timeout,
                 ) = previous_timeouts
@@ -229,6 +234,7 @@ class UdsClientService:
                 return self._tester_present_status_payload(active_mode)
 
             self._start_tester_present_worker_locked(requested)
+            self._tester_present_mode = requested
             return self._tester_present_status_payload(requested)
 
     def _release_tester_present_sync(self, owner: str) -> dict[str, object]:
@@ -240,6 +246,7 @@ class UdsClientService:
                 return self._tester_present_status_payload(active_mode)
 
             thread_to_join = self._stop_tester_present_worker_locked()
+            self._tester_present_mode = None
 
         if thread_to_join is not None:
             thread_to_join.join(timeout=1.0)
@@ -272,7 +279,6 @@ class UdsClientService:
             name="uds-mcp-tester-present",
             daemon=True,
         )
-        self._tester_present_mode = mode
         self._tester_present_stop_event = stop_event
         self._tester_present_thread = thread
         thread.start()
@@ -280,12 +286,10 @@ class UdsClientService:
     def _stop_tester_present_worker_locked(self) -> Thread | None:
         thread = self._tester_present_thread
         if thread is None:
-            self._tester_present_mode = None
             self._tester_present_stop_event = None
             return None
         stop_event = self._tester_present_stop_event
         self._tester_present_thread = None
-        self._tester_present_mode = None
         self._tester_present_stop_event = None
         if stop_event is not None:
             stop_event.set()
@@ -305,7 +309,7 @@ class UdsClientService:
 
         while not stop_event.wait(interval_sec):
             try:
-                # 0x80 suppresses positive response, so this should be fire-and-forget.
+                # 0x80 suppresses positive response, so this is fire-and-forget.
                 self._can.send_frame(arbitration_id, b"\x3e\x80")
             except Exception as exc:
                 self._event_store.append(

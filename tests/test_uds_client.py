@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from threading import Event, Thread
+
+from uds.addressing import AddressingType
 
 from uds_mcp.logging.store import EventStore
 from uds_mcp.uds.client import UdsClientService, UdsConfig
@@ -30,9 +33,49 @@ class _FakeTransport:
 class _FakeClient:
     def __init__(self, transport_interface: object) -> None:
         self.transport_interface = transport_interface
+        self.p3_client_physical = 100.0
+        self.p3_client_functional = 100.0
+        self.s3_client = 2000.0
+        self._tp_event = Event()
+        self._tp_thread: Thread | None = None
+        self._tp_addressing = AddressingType.PHYSICAL
 
     def send_request_receive_responses(self, request: object) -> tuple[object, tuple[object, ...]]:
         raise RuntimeError("not used in this test")
+
+    @property
+    def is_tester_present_sent(self) -> bool:
+        return self._tp_event.is_set()
+
+    def start_tester_present(
+        self,
+        addressing_type: AddressingType = AddressingType.FUNCTIONAL,
+        sprmib: bool = True,
+    ) -> None:
+        if self._tp_event.is_set():
+            return
+        if not sprmib:
+            raise AssertionError("tests expect SPRMIB to be enabled")
+        self._tp_addressing = addressing_type
+        self._tp_event.set()
+        self._tp_thread = Thread(target=self._tp_loop, daemon=True)
+        self._tp_thread.start()
+
+    def stop_tester_present(self) -> None:
+        self._tp_event.clear()
+        if self._tp_thread is not None:
+            self._tp_thread.join(timeout=1.0)
+            self._tp_thread = None
+
+    def _tp_loop(self) -> None:
+        while self._tp_event.wait(self.s3_client / 1000.0):
+            addressing = self.transport_interface.addressing_information
+            arbitration_id = (
+                addressing.tx_functional_params["can_id"]
+                if self._tp_addressing == AddressingType.FUNCTIONAL
+                else addressing.tx_physical_params["can_id"]
+            )
+            self.transport_interface.network_manager.send_frame(arbitration_id, b"\x3E\x80")
 
 
 class _FakeCanInterface:
@@ -40,10 +83,57 @@ class _FakeCanInterface:
         self.sent_frames: list[tuple[int, bytes, bool]] = []
 
     def get_bus(self) -> object:
-        return object()
+        return self
 
     def send_frame(self, arbitration_id: int, data: bytes, *, is_extended_id: bool = False) -> None:
         self.sent_frames.append((arbitration_id, data, is_extended_id))
+
+
+class _FakeFrame:
+    def __init__(self) -> None:
+        self.channel = "test"
+        self.is_extended_id = False
+
+
+class _FakePacketRecord:
+    def __init__(self, can_id: int, data: bytes) -> None:
+        self.can_id = can_id
+        self.raw_frame_data = data
+        self.frame = _FakeFrame()
+
+
+class _FakeUdsMessageRecord:
+    def __init__(self, payload: bytes, can_id: int) -> None:
+        self.payload = payload
+        self.packets_records = [_FakePacketRecord(can_id, payload)]
+
+
+class _TimeoutMutatingFakeClient(_FakeClient):
+    def __init__(self, transport_interface: object) -> None:
+        super().__init__(transport_interface)
+        self._p2_client_timeout = 100.0
+        self.p2_ext_client_timeout = 5050.0
+        self.p6_client_timeout = 10000.0
+        self.p6_ext_client_timeout = 50000.0
+
+    @property
+    def p2_client_timeout(self) -> float:
+        return self._p2_client_timeout
+
+    @p2_client_timeout.setter
+    def p2_client_timeout(self, value: float) -> None:
+        self._p2_client_timeout = value
+        # Mimic py-uds behavior: raising P2 can implicitly raise P3.
+        if value > self.p3_client_physical:
+            self.p3_client_physical = value
+        if value > self.p3_client_functional:
+            self.p3_client_functional = value
+
+    def send_request_receive_responses(self, request: object) -> tuple[object, tuple[object, ...]]:
+        payload = getattr(request, "payload")
+        request_record = _FakeUdsMessageRecord(payload, can_id=0x70D)
+        response_record = _FakeUdsMessageRecord(bytes.fromhex("5003"), can_id=0x78D)
+        return request_record, (response_record,)
 
 
 def test_tester_present_periodic_send_physical_mode(monkeypatch) -> None:
@@ -61,14 +151,14 @@ def test_tester_present_periodic_send_physical_mode(monkeypatch) -> None:
                 rx_id=0x78D,
                 tx_functional_id=0x7DF,
                 rx_functional_id=0x7E8,
-                tester_present_interval_sec=0.05,
+                tester_present_interval_sec=0.1,
             ),
             EventStore(),
         )
 
         status = await service.start_manual_tester_present(addressing_mode="physical")
         assert status["running"] is True
-        await asyncio.sleep(0.16)
+        await asyncio.sleep(0.26)
         status = await service.stop_manual_tester_present()
         assert status["running"] is False
         service.close()
@@ -95,14 +185,14 @@ def test_tester_present_periodic_send_functional_mode(monkeypatch) -> None:
                 rx_id=0x78D,
                 tx_functional_id=0x7DF,
                 rx_functional_id=0x7E8,
-                tester_present_interval_sec=0.05,
+                tester_present_interval_sec=0.1,
             ),
             EventStore(),
         )
 
         status = await service.start_manual_tester_present(addressing_mode="functional")
         assert status["addressing_mode"] == "functional"
-        await asyncio.sleep(0.12)
+        await asyncio.sleep(0.16)
         await service.stop_manual_tester_present()
         service.close()
 
@@ -131,7 +221,7 @@ def test_transport_config_for_can_fd_and_optimization(monkeypatch) -> None:
                 can_fd=True,
                 use_data_optimization=True,
                 min_dlc=16,
-                tester_present_interval_sec=0.05,
+                tester_present_interval_sec=0.1,
             ),
             EventStore(),
         )
@@ -142,6 +232,42 @@ def test_transport_config_for_can_fd_and_optimization(monkeypatch) -> None:
         assert str(params["can_version"]) == "CanVersion.CAN_FD"
         assert params["use_data_optimization"] is True
         assert params["min_dlc"] == 16
+
+        service.close()
+
+    asyncio.run(_run())
+
+
+def test_send_restores_p3_after_temporary_timeout_override(monkeypatch) -> None:
+    async def _run() -> None:
+        import uds_mcp.uds.client as uds_client_module
+
+        monkeypatch.setattr(uds_client_module, "PyCanTransportInterface", _FakeTransport)
+        monkeypatch.setattr(uds_client_module, "Client", _TimeoutMutatingFakeClient)
+
+        can_if = _FakeCanInterface()
+        service = UdsClientService(
+            can_if,
+            UdsConfig(
+                tx_id=0x70D,
+                rx_id=0x78D,
+                tx_functional_id=0x7DF,
+                rx_functional_id=0x7E8,
+                tester_present_interval_sec=0.1,
+            ),
+            EventStore(),
+        )
+
+        client = service._client  # noqa: SLF001
+        assert client.p3_client_physical == 100.0
+        assert client.p3_client_functional == 100.0
+
+        result = await service.send("1003", timeout_ms=1000)
+        assert result["response_hex"] == "5003"
+
+        # Critical regression check: temporary timeout must not permanently enlarge P3.
+        assert client.p3_client_physical == 100.0
+        assert client.p3_client_functional == 100.0
 
         service.close()
 
