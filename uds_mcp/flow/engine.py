@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+import yaml
 
 from uds_mcp.flow.schema import (
     FlowDefinition,
@@ -100,14 +103,45 @@ class FlowEngine:
 
     def status(self, run_id: str) -> dict[str, Any]:
         run = self._runs[run_id]
-        return {
+        result: dict[str, Any] = {
             "run_id": run.run_id,
             "flow_name": run.flow_name,
             "status": run.status.value,
             "current_step": run.current_step,
             "error": run.error,
-            "trace": run.trace,
+            "step_count": self._count_steps(run.trace),
+            "message_count": len(run.trace),
         }
+        if run.status == FlowStatus.FAILED:
+            result["failed_step_trace"] = run.trace[-50:]
+        return result
+
+    def get_trace(self, run_id: str) -> list[dict[str, Any]]:
+        """Return the full trace for a flow run."""
+        return self._runs[run_id].trace
+
+    def trace_search(self, run_id: str, pattern: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Search trace records by regex pattern."""
+        if run_id not in self._runs:
+            raise KeyError(f"run_id not found: {run_id}")
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"invalid regex pattern: {pattern}") from exc
+
+        run = self._runs[run_id]
+        results: list[dict[str, Any]] = []
+        for entry in run.trace:
+            text = " ".join(str(v) for v in entry.values() if isinstance(v, str))
+            if compiled.search(text):
+                results.append(entry)
+                if len(results) >= limit:
+                    break
+        return results
+
+    def _count_steps(self, trace: list[dict[str, Any]]) -> int:
+        """Count unique step names in the trace."""
+        return len({entry["step"] for entry in trace if "step" in entry})
 
     def stop(self, run_id: str) -> None:
         run = self._runs[run_id]
@@ -163,7 +197,6 @@ class FlowEngine:
         flow_path = self._flow_sources.get(flow.name)
         flow_dir = flow_path.parent if flow_path is not None else Path.cwd().resolve()
         variables = _resolve_flow_variables(flow.variables, flow_dir=flow_dir)
-        previous_response_hex: str | None = None
         flow_owner_active = False
         try:
             if flow.tester_present_policy == "during_flow":
@@ -171,143 +204,44 @@ class FlowEngine:
                 flow_owner_active = True
 
             for step in flow.steps:
-                step_owner_active = False
-                flow_owner_suspended = False
                 if run.stop_requested:
                     run.status = FlowStatus.STOPPED
                     self._log_state(run)
                     return
 
-                if step.tester_present == "on":
-                    await self._uds_client.start_tester_present_owner("flow-step")
-                    step_owner_active = True
-                elif step.tester_present == "off" and flow_owner_active:
-                    await self._uds_client.stop_tester_present_owner("flow-run")
-                    flow_owner_suspended = True
-
-                try:
-                    run.current_step = step.name
-                    if step.breakpoint:
-                        run.status = FlowStatus.PAUSED
+                for repeat_i in range(step.repeat):
+                    if run.stop_requested:
+                        run.status = FlowStatus.STOPPED
                         self._log_state(run)
-                        run.pause_event.clear()
-                        await self._uds_client.ensure_tester_present()
-                        await run.pause_event.wait()
-                        await self._uds_client.stop_tester_present()
-                        run.status = FlowStatus.RUNNING
-                        self._log_state(run)
+                        return
 
-                    request_sequence = self._build_step_request_sequence(
-                        step,
-                        variables,
-                        run.trace,
-                        flow_dir,
-                        flow_path,
-                    )
-                    base_request_hex = request_sequence[0]
-                    if step.before_hook:
-                        request_sequence = self._apply_before_hook(
-                            step.before_hook.script_path,
-                            step.before_hook.function_name,
-                            step.before_hook.snippet,
-                            base_request_hex,
-                            previous_response_hex,
+                    if step.sub_flow is not None:
+                        await self._run_sub_flow(
+                            run,
+                            step.sub_flow,
                             variables,
-                            run.trace,
+                            flow,
+                            depth=1,
+                            repeat_index=repeat_i,
+                            flow_owner_active=flow_owner_active,
+                        )
+                        if step.delay_ms > 0:
+                            await self._wait_step_delay(run, step.delay_ms)
+                            if run.stop_requested:
+                                run.status = FlowStatus.STOPPED
+                                self._log_state(run)
+                                return
+                    else:
+                        await self._run_step(
+                            run,
+                            step,
+                            variables,
+                            flow,
                             flow_dir,
                             flow_path,
+                            repeat_index=repeat_i,
+                            flow_owner_active=flow_owner_active,
                         )
-
-                    expected_prefix = None
-                    if step.expect and step.expect.response_prefix:
-                        expected_prefix = step.expect.response_prefix.upper()
-                    check_each_response = (
-                        step.transfer_data is not None
-                        and step.transfer_data.check_each_response
-                        and expected_prefix is not None
-                    )
-
-                    response_hex = ""
-                    sent_count = 0
-                    for base_index, request_hex in enumerate(request_sequence):
-                        per_message_sequence = [request_hex]
-                        if step.message_hook:
-                            per_message_sequence = self._apply_message_hook(
-                                step.message_hook.script_path,
-                                step.message_hook.function_name,
-                                step.message_hook.snippet,
-                                request_hex,
-                                previous_response_hex,
-                                variables,
-                                run.trace,
-                                flow_dir,
-                                flow_path,
-                                message_index=base_index,
-                                message_total=len(request_sequence),
-                                step_name=step.name,
-                            )
-
-                        for request_hex in per_message_sequence:
-                            response = await self._uds_client.send(
-                                request_hex, timeout_ms=step.timeout_ms
-                            )
-                            response_hex = str(response["response_hex"])
-
-                            item = {
-                                "step": step.name,
-                                "request_hex": request_hex,
-                                "response_hex": response_hex,
-                                "request_index": sent_count,
-                                "request_total": len(request_sequence),
-                            }
-                            run.trace.append(item)
-                            self._event_store.append(
-                                LogEvent(kind=EventKind.FLOW_STEP, payload=item)
-                            )
-                            previous_response_hex = response_hex
-
-                            if check_each_response and not response_hex.startswith(expected_prefix):
-                                raise ValueError(
-                                    "step "
-                                    f"{step.name}: transfer_data expect prefix {expected_prefix}, "
-                                    f"got {response_hex} at request_index {sent_count}"
-                                )
-
-                            sent_count += 1
-
-                    if step.after_hook:
-                        response_hex = self._apply_after_hook(
-                            step.after_hook.script_path,
-                            step.after_hook.function_name,
-                            step.after_hook.snippet,
-                            request_hex,
-                            response_hex,
-                            variables,
-                            run.trace,
-                            flow_dir,
-                            flow_path,
-                        )
-
-                    if (
-                        expected_prefix is not None
-                        and not check_each_response
-                        and not response_hex.startswith(expected_prefix)
-                    ):
-                        raise ValueError(
-                            f"step {step.name}: expect prefix {expected_prefix}, got {response_hex}"
-                        )
-
-                    if step.delay_ms > 0:
-                        await self._wait_step_delay(run, step.delay_ms)
-                        if run.stop_requested:
-                            run.status = FlowStatus.STOPPED
-                            self._log_state(run)
-                            return
-                finally:
-                    if step_owner_active:
-                        await self._uds_client.stop_tester_present_owner("flow-step")
-                    if flow_owner_suspended:
-                        await self._uds_client.start_tester_present_owner("flow-run")
 
             run.status = FlowStatus.DONE
             self._log_state(run)
@@ -329,6 +263,232 @@ class FlowEngine:
         finally:
             if flow_owner_active:
                 await self._uds_client.stop_tester_present_owner("flow-run")
+
+    async def _run_sub_flow(
+        self,
+        run: FlowRun,
+        sub_flow_path: str,
+        variables: dict[str, Any],
+        parent_flow: FlowDefinition,
+        *,
+        depth: int,
+        repeat_index: int = 0,  # noqa: ARG002
+        flow_owner_active: bool = False,
+    ) -> None:
+        """Load and recursively execute a sub-flow."""
+        if depth > 10:
+            raise ValueError(f"sub_flow nesting depth exceeded limit (10), current: {depth}")
+
+        path = Path(sub_flow_path)
+        if not path.exists():  # noqa: ASYNC240
+            raise FileNotFoundError(f"sub_flow file not found: {sub_flow_path}")
+
+        sub_flow = load_flow_yaml(path)
+        sub_flow_dir = path.resolve().parent  # noqa: ASYNC240
+
+        # Inherit parent's tester_present_policy unless sub-flow YAML explicitly sets its own
+        raw_data = yaml.safe_load(path.read_text(encoding="utf-8"))  # noqa: ASYNC240
+        if "tester_present_policy" not in raw_data:
+            sub_flow.tester_present_policy = parent_flow.tester_present_policy
+
+        sub_flow_name = sub_flow.name
+
+        for step in sub_flow.steps:
+            if run.stop_requested:
+                run.status = FlowStatus.STOPPED
+                self._log_state(run)
+                return
+
+            for repeat_i in range(step.repeat):
+                if run.stop_requested:
+                    run.status = FlowStatus.STOPPED
+                    self._log_state(run)
+                    return
+
+                if step.sub_flow is not None:
+                    await self._run_sub_flow(
+                        run,
+                        step.sub_flow,
+                        variables,
+                        sub_flow,
+                        depth=depth + 1,
+                        repeat_index=repeat_i,
+                        flow_owner_active=flow_owner_active,
+                    )
+                    if step.delay_ms > 0:
+                        await self._wait_step_delay(run, step.delay_ms)
+                        if run.stop_requested:
+                            run.status = FlowStatus.STOPPED
+                            self._log_state(run)
+                            return
+                else:
+                    await self._run_step(
+                        run,
+                        step,
+                        variables,
+                        sub_flow,
+                        sub_flow_dir,
+                        path.resolve(),  # noqa: ASYNC240
+                        depth=depth,
+                        repeat_index=repeat_i,
+                        flow_owner_active=flow_owner_active,
+                        sub_flow_name=sub_flow_name,
+                    )
+
+    async def _run_step(
+        self,
+        run: FlowRun,
+        step: FlowStep,
+        variables: dict[str, Any],
+        flow: FlowDefinition,
+        flow_dir: Path,
+        flow_path: Path | None,
+        *,
+        depth: int = 0,
+        repeat_index: int = 0,
+        flow_owner_active: bool = False,
+        sub_flow_name: str | None = None,
+    ) -> None:
+        step_owner_active = False
+        flow_owner_suspended = False
+
+        addressing_mode = _resolve_addressing_mode(step, flow)
+
+        if step.tester_present == "on":
+            await self._uds_client.start_tester_present_owner("flow-step")
+            step_owner_active = True
+        elif step.tester_present == "off" and flow_owner_active:
+            await self._uds_client.stop_tester_present_owner("flow-run")
+            flow_owner_suspended = True
+
+        try:
+            run.current_step = step.name
+            if step.breakpoint:
+                run.status = FlowStatus.PAUSED
+                self._log_state(run)
+                run.pause_event.clear()
+                await self._uds_client.ensure_tester_present()
+                await run.pause_event.wait()
+                await self._uds_client.stop_tester_present()
+                run.status = FlowStatus.RUNNING
+                self._log_state(run)
+
+            request_sequence = self._build_step_request_sequence(
+                step,
+                variables,
+                run.trace,
+                flow_dir,
+                flow_path,
+            )
+            base_request_hex = request_sequence[0]
+            previous_response_hex = run.trace[-1]["response_hex"] if run.trace else None
+            if step.before_hook:
+                request_sequence = self._apply_before_hook(
+                    step.before_hook.script_path,
+                    step.before_hook.function_name,
+                    step.before_hook.snippet,
+                    base_request_hex,
+                    previous_response_hex,
+                    variables,
+                    run.trace,
+                    flow_dir,
+                    flow_path,
+                )
+
+            expected_prefix = None
+            if step.expect and step.expect.response_prefix:
+                expected_prefix = step.expect.response_prefix.upper()
+            check_each_response = (
+                step.transfer_data is not None
+                and step.transfer_data.check_each_response
+                and expected_prefix is not None
+            )
+
+            response_hex = ""
+            sent_count = 0
+            for base_index, request_hex in enumerate(request_sequence):
+                per_message_sequence = [request_hex]
+                if step.message_hook:
+                    per_message_sequence = self._apply_message_hook(
+                        step.message_hook.script_path,
+                        step.message_hook.function_name,
+                        step.message_hook.snippet,
+                        request_hex,
+                        previous_response_hex,
+                        variables,
+                        run.trace,
+                        flow_dir,
+                        flow_path,
+                        message_index=base_index,
+                        message_total=len(request_sequence),
+                        step_name=step.name,
+                    )
+
+                for request_hex in per_message_sequence:
+                    response = await self._uds_client.send(
+                        request_hex,
+                        timeout_ms=step.timeout_ms,
+                        addressing_mode=addressing_mode,
+                    )
+                    response_hex = str(response["response_hex"])
+
+                    item: dict[str, Any] = {
+                        "step": step.name,
+                        "request_hex": request_hex,
+                        "response_hex": response_hex,
+                        "request_index": sent_count,
+                        "request_total": len(request_sequence),
+                        "repeat_index": repeat_index,
+                        "sub_flow_depth": depth,
+                        "sub_flow_name": sub_flow_name,
+                        "addressing_mode": addressing_mode,
+                    }
+                    run.trace.append(item)
+                    self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+                    previous_response_hex = response_hex
+
+                    if check_each_response and not response_hex.startswith(expected_prefix):
+                        raise ValueError(
+                            "step "
+                            f"{step.name}: transfer_data expect prefix {expected_prefix}, "
+                            f"got {response_hex} at request_index {sent_count}"
+                        )
+
+                    sent_count += 1
+
+            if step.after_hook:
+                response_hex = self._apply_after_hook(
+                    step.after_hook.script_path,
+                    step.after_hook.function_name,
+                    step.after_hook.snippet,
+                    request_hex,
+                    response_hex,
+                    variables,
+                    run.trace,
+                    flow_dir,
+                    flow_path,
+                )
+
+            if (
+                expected_prefix is not None
+                and not check_each_response
+                and not response_hex.startswith(expected_prefix)
+            ):
+                raise ValueError(
+                    f"step {step.name}: expect prefix {expected_prefix}, got {response_hex}"
+                )
+
+            if step.delay_ms > 0:
+                await self._wait_step_delay(run, step.delay_ms)
+                if run.stop_requested:
+                    run.status = FlowStatus.STOPPED
+                    self._log_state(run)
+                    return
+        finally:
+            if step_owner_active:
+                await self._uds_client.stop_tester_present_owner("flow-step")
+            if flow_owner_suspended:
+                await self._uds_client.start_tester_present_owner("flow-run")
 
     def _apply_before_hook(
         self,
@@ -657,3 +817,17 @@ def _resolve_flow_variables(values: dict[str, Any], *, flow_dir: Path) -> dict[s
             continue
         resolved[key] = str((flow_dir / path_value).resolve())
     return resolved
+
+
+def _resolve_addressing_mode(
+    step: FlowStep,
+    flow: FlowDefinition,
+) -> Literal["physical", "functional"]:
+    """Resolve the effective addressing mode for a step.
+
+    When the step's addressing_mode is "inherit", use the flow's
+    default_addressing_mode.  Otherwise use the step's own value.
+    """
+    if step.addressing_mode != "inherit":
+        return step.addressing_mode
+    return flow.default_addressing_mode

@@ -6,7 +6,12 @@ from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING, Literal
 
 from uds.addressing import AddressingType
-from uds.can import CanAddressingFormat, CanAddressingInformation, CanVersion, PyCanTransportInterface
+from uds.can import (
+    CanAddressingFormat,
+    CanAddressingInformation,
+    CanVersion,
+    PyCanTransportInterface,
+)
 from uds.client import Client
 from uds.message import UdsMessage, UdsMessageRecord
 
@@ -301,7 +306,7 @@ class UdsClientService:
         while not stop_event.wait(interval_sec):
             try:
                 # 0x80 suppresses positive response, so this should be fire-and-forget.
-                self._can.send_frame(arbitration_id, b"\x3E\x80")
+                self._can.send_frame(arbitration_id, b"\x3e\x80")
             except Exception as exc:
                 self._event_store.append(
                     LogEvent(

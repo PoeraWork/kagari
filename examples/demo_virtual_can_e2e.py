@@ -155,7 +155,7 @@ async def main() -> None:
         print("Status:", final["status"])
         print("Error:", final["error"])
         print("Trace:")
-        for item in final["trace"]:
+        for item in flow_engine.get_trace(run_id):
             print("  ", item)
 
         if final["status"] == FlowStatus.FAILED.value:

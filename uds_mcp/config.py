@@ -26,6 +26,7 @@ class AppConfig:
     extension_whitelist: Path = Path("./extensions")
     extension_import_whitelist: tuple[str, ...] = ()
     tester_present_interval_sec: float = 2.0
+    log_persist_dir: Path | None = None
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -55,6 +56,7 @@ class AppConfig:
                 os.getenv("UDS_MCP_EXTENSION_IMPORT_WHITELIST", "")
             ),
             tester_present_interval_sec=float(os.getenv("UDS_MCP_TESTER_PRESENT_INTERVAL", "2.0")),
+            log_persist_dir=_parse_optional_path_env(os.getenv("UDS_MCP_LOG_PERSIST_DIR")),
         )
 
     @classmethod
@@ -89,7 +91,9 @@ class AppConfig:
         return cls(
             can_interface=str(can_table.get("interface", "socketcan")),
             can_channel=str(can_table.get("channel", "vcan0")),
-            can_bitrate=_parse_int_like(can_table.get("bitrate", 500000), field_name="[can].bitrate"),
+            can_bitrate=_parse_int_like(
+                can_table.get("bitrate", 500000), field_name="[can].bitrate"
+            ),
             can_fd=_parse_bool_like(can_table.get("fd", False), field_name="[can].fd"),
             can_data_bitrate=(
                 _parse_int_like(can_table["data_bitrate"], field_name="[can].data_bitrate")
@@ -120,6 +124,9 @@ class AppConfig:
                 app_table.get("tester_present_interval_sec", 2.0),
                 field_name="[app].tester_present_interval_sec",
             ),
+            log_persist_dir=(
+                Path(str(app_table["log_persist_dir"])) if "log_persist_dir" in app_table else None
+            ),
         )
 
     def to_toml(self) -> str:
@@ -145,6 +152,11 @@ class AppConfig:
             f"extension_whitelist = {self.extension_whitelist.as_posix()!r}\n"
             f"extension_import_whitelist = {list(self.extension_import_whitelist)!r}\n"
             f"tester_present_interval_sec = {self.tester_present_interval_sec}\n"
+            + (
+                f"log_persist_dir = {self.log_persist_dir.as_posix()!r}\n"
+                if self.log_persist_dir is not None
+                else ""
+            )
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -169,20 +181,27 @@ class AppConfig:
                 "extension_whitelist": self.extension_whitelist.as_posix(),
                 "extension_import_whitelist": list(self.extension_import_whitelist),
                 "tester_present_interval_sec": self.tester_present_interval_sec,
+                "log_persist_dir": (
+                    self.log_persist_dir.as_posix() if self.log_persist_dir is not None else None
+                ),
             },
         }
 
     def resolve_paths(self, *, base_dir: Path) -> AppConfig:
         flow_repo = self.flow_repo
         extension_whitelist = self.extension_whitelist
+        log_persist_dir = self.log_persist_dir
         if not flow_repo.is_absolute():
             flow_repo = (base_dir / flow_repo).resolve()
         if not extension_whitelist.is_absolute():
             extension_whitelist = (base_dir / extension_whitelist).resolve()
+        if log_persist_dir is not None and not log_persist_dir.is_absolute():
+            log_persist_dir = (base_dir / log_persist_dir).resolve()
         return replace(
             self,
             flow_repo=flow_repo,
             extension_whitelist=extension_whitelist,
+            log_persist_dir=log_persist_dir,
         )
 
 
@@ -211,6 +230,15 @@ def _parse_optional_int_env(value: str | None) -> int | None:
     if not stripped:
         return None
     return int(stripped)
+
+
+def _parse_optional_path_env(value: str | None) -> Path | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return Path(stripped)
 
 
 def _parse_int_like(value: object, *, field_name: str) -> int:

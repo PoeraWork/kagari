@@ -11,6 +11,7 @@ from uds_mcp.can.interface import CanInterface
 from uds_mcp.config import AppConfig, load_config
 from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine, FlowStatus
+from uds_mcp.logging.exporters.blf import BlfExporter
 from uds_mcp.logging.store import EventStore
 from uds_mcp.uds.client import UdsClientService, UdsConfig
 
@@ -58,6 +59,9 @@ def main() -> None:
                     Path(args.path),
                     wait=not args.no_wait,
                     timeout_s=args.timeout_s,
+                    blf_output=Path(args.blf_output) if args.blf_output else None,
+                    verbose=args.verbose,
+                    event_store=app.event_store,
                 )
             )
             _print_json(result)
@@ -109,32 +113,56 @@ async def _run_flow_once(
     *,
     wait: bool,
     timeout_s: float | None,
+    blf_output: Path | None = None,
+    verbose: bool = False,
+    event_store: EventStore | None = None,
 ) -> dict[str, Any]:
-    flow = flow_engine.load(path)
-    run_id = await flow_engine.start(flow.name)
-    if not wait:
-        return {"ok": True, "run_id": run_id, "status": "STARTED"}
+    blf_exporter: BlfExporter | None = None
+    if blf_output is not None and event_store is not None:
+        blf_exporter = BlfExporter()
+        blf_exporter.start_streaming(blf_output)
+        event_store.add_listener(blf_exporter.on_event)
 
-    timeout = timeout_s if timeout_s is not None else 0.0
-    started = asyncio.get_running_loop().time()
-    while True:
-        status = flow_engine.status(run_id)
-        current = str(status["status"])
-        if current in {FlowStatus.DONE.value, FlowStatus.FAILED.value, FlowStatus.STOPPED.value}:
-            return status
+    try:
+        flow = flow_engine.load(path)
+        run_id = await flow_engine.start(flow.name)
+        if not wait:
+            return {"ok": True, "run_id": run_id, "status": "STARTED"}
 
-        if timeout > 0 and (asyncio.get_running_loop().time() - started) > timeout:
-            flow_engine.stop(run_id)
-            stopped = flow_engine.status(run_id)
-            return {
-                "run_id": run_id,
-                "flow_name": stopped["flow_name"],
-                "status": "TIMEOUT",
-                "current_step": stopped["current_step"],
-                "error": f"flow timeout after {timeout:.3f}s",
-                "trace": stopped["trace"],
-            }
-        await asyncio.sleep(0.05)
+        timeout = timeout_s if timeout_s is not None else 0.0
+        started = asyncio.get_running_loop().time()
+        while True:
+            status = flow_engine.status(run_id)
+            current = str(status["status"])
+            if current in {
+                FlowStatus.DONE.value,
+                FlowStatus.FAILED.value,
+                FlowStatus.STOPPED.value,
+            }:
+                if verbose:
+                    status["trace"] = flow_engine.get_trace(run_id)
+                return status
+
+            if timeout > 0 and (asyncio.get_running_loop().time() - started) > timeout:
+                flow_engine.stop(run_id)
+                stopped = flow_engine.status(run_id)
+                result: dict[str, Any] = {
+                    "run_id": run_id,
+                    "flow_name": stopped["flow_name"],
+                    "status": "TIMEOUT",
+                    "current_step": stopped["current_step"],
+                    "error": f"flow timeout after {timeout:.3f}s",
+                    "step_count": stopped.get("step_count", 0),
+                    "message_count": stopped.get("message_count", 0),
+                }
+                if verbose:
+                    result["trace"] = flow_engine.get_trace(run_id)
+                return result
+            await asyncio.sleep(0.05)
+    finally:
+        if blf_exporter is not None and event_store is not None:
+            event_store.remove_listener(blf_exporter.on_event)
+            blf_exporter.stop_streaming()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -188,6 +216,14 @@ def _build_parser() -> argparse.ArgumentParser:
     flow_run.add_argument("path", help="Path to flow YAML file.")
     flow_run.add_argument("--no-wait", action="store_true", help="Return immediately after start.")
     flow_run.add_argument("--timeout-s", type=float, default=0.0, help="Optional timeout seconds.")
+    flow_run.add_argument(
+        "--blf-output", help="Path to BLF file for streaming CAN events during flow execution."
+    )
+    flow_run.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Output full trace instead of simplified status summary.",
+    )
 
     return parser
 

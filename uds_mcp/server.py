@@ -25,7 +25,7 @@ class AppState:
     def __init__(self, config: AppConfig, *, config_source: str = "startup") -> None:
         self.config = config
         self.config_source = config_source
-        self.event_store = EventStore()
+        self.event_store = EventStore(persist_dir=config.log_persist_dir)
         self.blf_exporter = BlfExporter()
         self.can = self._build_can(config)
         self.uds = self._build_uds(config, self.can)
@@ -288,6 +288,12 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         flow = FlowDefinition.model_validate(
             {"name": name, "variables": variables or {}, "steps": steps}
         )
+        # Validate sub_flow paths are absolute
+        for step in flow.steps:
+            if step.sub_flow is not None and not Path(step.sub_flow).is_absolute():
+                raise ValueError(
+                    f"sub_flow path must be absolute when using flow_register_inline: {step.sub_flow}"
+                )
         state.flow_engine.register(flow)
         return {"ok": True, "flow": flow.name, "steps": len(flow.steps)}
 
@@ -375,6 +381,14 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                 "security_model": "user-managed",
                 "note": "extension_import_whitelist is retained for backward compatibility",
             },
+            "step_fields": {
+                "sub_flow": "str|None - path to sub-flow YAML file (mutually exclusive with send/transfer_data)",
+                "repeat": "int>=1 - number of times to repeat this step (default 1)",
+                "addressing_mode": "physical|functional|inherit - UDS addressing mode (default inherit from flow)",
+            },
+            "flow_fields": {
+                "default_addressing_mode": "physical|functional - default addressing mode for steps with inherit (default physical)",
+            },
         }
 
     @mcp.tool(description="Create a starter flow template and optionally write it to YAML.")
@@ -412,13 +426,21 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         }
 
     @mcp.tool(description="Start a registered flow asynchronously.")
-    async def flow_start(flow_name: str) -> dict[str, object]:
+    async def flow_start(flow_name: str, blf_output: str | None = None) -> dict[str, object]:
+        if blf_output is not None:
+            blf_path = Path(blf_output)
+            state.blf_exporter.start_streaming(blf_path)
+            state.event_store.add_listener(state.blf_exporter.on_event)
         run_id = await state.flow_engine.start(flow_name)
-        return {"ok": True, "run_id": run_id}
+        return {"ok": True, "run_id": run_id, "blf_output": blf_output}
 
     @mcp.tool(description="Get current status of a flow run by run_id.")
     def flow_status(run_id: str) -> dict[str, object]:
         return state.flow_engine.status(run_id)
+
+    @mcp.tool(description="Search flow trace by run_id and regex pattern.")
+    def flow_trace_search(run_id: str, pattern: str, limit: int = 100) -> list[dict[str, Any]]:
+        return state.flow_engine.trace_search(run_id, pattern, limit=limit)
 
     @mcp.tool(description="Stop a running or paused flow run.")
     def flow_stop(run_id: str) -> dict[str, object]:

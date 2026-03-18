@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -44,11 +45,14 @@ class TransferDataConfig(BaseModel):
 class FlowStep(BaseModel):
     name: str
     send: str | None = Field(default=None, description="UDS request hex string")
+    sub_flow: str | None = None
+    repeat: int = Field(default=1, ge=1)
     timeout_ms: int = 1000
     delay_ms: int = Field(default=0, ge=0, description="Non-blocking delay after step success")
     expect: StepExpect | None = None
     breakpoint: bool = False
     tester_present: Literal["inherit", "on", "off"] = "inherit"
+    addressing_mode: Literal["physical", "functional", "inherit"] = "inherit"
     transfer_data: TransferDataConfig | None = None
     before_hook: HookConfig | None = None
     message_hook: HookConfig | None = None
@@ -56,8 +60,21 @@ class FlowStep(BaseModel):
 
     @model_validator(mode="after")
     def _validate_request_source(self) -> FlowStep:
-        if self.send is None and self.transfer_data is None:
-            raise ValueError("step requires send or transfer_data")
+        sources = [self.send is not None, self.transfer_data is not None, self.sub_flow is not None]
+        count = sum(sources)
+        if count == 0:
+            raise ValueError("step requires exactly one of send, transfer_data, or sub_flow")
+        if count > 1:
+            raise ValueError("step requires exactly one of send, transfer_data, or sub_flow")
+        if self.sub_flow is not None:
+            if self.before_hook is not None:
+                raise ValueError("sub_flow step must not set before_hook")
+            if self.message_hook is not None:
+                raise ValueError("sub_flow step must not set message_hook")
+            if self.after_hook is not None:
+                raise ValueError("sub_flow step must not set after_hook")
+            if self.expect is not None:
+                raise ValueError("sub_flow step must not set expect")
         return self
 
 
@@ -65,6 +82,7 @@ class FlowDefinition(BaseModel):
     name: str
     version: str = "1.0"
     tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only"
+    default_addressing_mode: Literal["physical", "functional"] = "physical"
     variables: dict[str, Any] = Field(default_factory=dict)
     steps: list[FlowStep]
 
@@ -74,6 +92,7 @@ def load_flow_yaml(path: Path) -> FlowDefinition:
     flow = FlowDefinition.model_validate(data)
     base_dir = path.resolve().parent
     for step in flow.steps:
+        _resolve_sub_flow_path(step, base_dir)
         _resolve_hook_script_path(step.before_hook, base_dir)
         _resolve_hook_script_path(step.message_hook, base_dir)
         _resolve_hook_script_path(step.after_hook, base_dir)
@@ -84,7 +103,10 @@ def load_flow_yaml(path: Path) -> FlowDefinition:
 
 def dump_flow_yaml(path: Path, flow: FlowDefinition) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    base_dir = path.resolve().parent
     data = flow.model_dump(mode="json")
+    for step_data in data.get("steps", []):
+        _relativize_sub_flow_path(step_data, base_dir)
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=False), encoding="utf-8")
 
 
@@ -96,3 +118,26 @@ def _resolve_hook_script_path(hook: HookConfig | None, base_dir: Path) -> None:
         hook.script_path = str(target.resolve())
         return
     hook.script_path = str((base_dir / target).resolve())
+
+
+def _resolve_sub_flow_path(step: FlowStep, base_dir: Path) -> None:
+    """Resolve a step's sub_flow relative path to an absolute path."""
+    if step.sub_flow is None:
+        return
+    target = Path(step.sub_flow)
+    if target.is_absolute():
+        step.sub_flow = str(target.resolve())
+        return
+    step.sub_flow = str((base_dir / target).resolve())
+
+
+def _relativize_sub_flow_path(step_data: dict[str, Any], base_dir: Path) -> None:
+    """Convert a step dict's sub_flow absolute path back to a relative path."""
+    sub_flow = step_data.get("sub_flow")
+    if sub_flow is None:
+        return
+    try:
+        step_data["sub_flow"] = str(Path(sub_flow).relative_to(base_dir))
+    except ValueError:
+        # Path is not relative to base_dir; use os.path.relpath as fallback
+        step_data["sub_flow"] = os.path.relpath(sub_flow, base_dir)

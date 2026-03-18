@@ -23,6 +23,7 @@ def create_flow_template(
     include_dynamic_hook: bool = True,
     tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only",
     default_step_tester_present: Literal["inherit", "on", "off"] = "inherit",
+    default_addressing_mode: Literal["physical", "functional"] = "physical",
 ) -> FlowDefinition:
     if preset not in _FLOW_PRESETS:
         available = ", ".join(_FLOW_PRESETS)
@@ -41,6 +42,7 @@ def create_flow_template(
         return FlowDefinition(
             name=flow_name,
             tester_present_policy=tester_present_policy,
+            default_addressing_mode=default_addressing_mode,
             steps=steps,
         )
 
@@ -60,6 +62,7 @@ def create_flow_template(
     return FlowDefinition(
         name=flow_name,
         tester_present_policy=tester_present_policy,
+        default_addressing_mode=default_addressing_mode,
         variables={"did": "F190"},
         steps=[
             FlowStep(
@@ -86,6 +89,7 @@ def init_flow_template(
     include_dynamic_hook: bool = True,
     tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only",
     default_step_tester_present: Literal["inherit", "on", "off"] = "inherit",
+    default_addressing_mode: Literal["physical", "functional"] = "physical",
     path: Path | None = None,
     overwrite: bool = False,
 ) -> tuple[FlowDefinition, str]:
@@ -95,6 +99,7 @@ def init_flow_template(
         include_dynamic_hook=include_dynamic_hook,
         tester_present_policy=tester_present_policy,
         default_step_tester_present=default_step_tester_present,
+        default_addressing_mode=default_addressing_mode,
     )
     yaml_text = render_flow_template_yaml(flow)
 

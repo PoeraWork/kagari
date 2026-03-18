@@ -100,3 +100,200 @@ def test_load_flow_yaml_resolves_hook_path_relative_to_yaml_file(tmp_path: Path)
     hook = loaded.steps[0].before_hook
     assert hook is not None
     assert hook.script_path == str((tmp_path / "extensions" / "demo_hook.py").resolve())
+
+
+# ---------------------------------------------------------------------------
+# Task 1.6 – Unit tests for schema 变更
+# Requirements: 1.1, 1.2, 1.5, 3.1, 3.7, 9.1, 9.2, 9.7
+# ---------------------------------------------------------------------------
+
+
+class TestSubFlowStepCreation:
+    """Valid sub_flow step creation."""
+
+    _sub_flow_path = "/flows/child.yaml"
+
+    def test_valid_sub_flow_step(self) -> None:
+        flow = FlowDefinition(
+            name="parent",
+            steps=[{"name": "child", "sub_flow": self._sub_flow_path}],
+        )
+        assert flow.steps[0].sub_flow == self._sub_flow_path
+        assert flow.steps[0].send is None
+        assert flow.steps[0].transfer_data is None
+
+    def test_sub_flow_step_with_delay_and_breakpoint(self) -> None:
+        flow = FlowDefinition(
+            name="parent",
+            steps=[
+                {
+                    "name": "child",
+                    "sub_flow": self._sub_flow_path,
+                    "delay_ms": 100,
+                    "breakpoint": True,
+                }
+            ],
+        )
+        assert flow.steps[0].delay_ms == 100
+        assert flow.steps[0].breakpoint is True
+
+
+class TestMutualExclusivity:
+    """send / transfer_data / sub_flow must be mutually exclusive."""
+
+    _sf = "/flows/c.yaml"
+
+    def test_send_and_sub_flow_rejected(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            FlowDefinition(
+                name="bad",
+                steps=[{"name": "s", "send": "1003", "sub_flow": self._sf}],
+            )
+
+    def test_transfer_data_and_sub_flow_rejected(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            FlowDefinition(
+                name="bad",
+                steps=[
+                    {
+                        "name": "s",
+                        "transfer_data": {"segments": [{"address": 0x1000, "data_hex": "AA"}]},
+                        "sub_flow": self._sf,
+                    }
+                ],
+            )
+
+    def test_all_three_rejected(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            FlowDefinition(
+                name="bad",
+                steps=[
+                    {
+                        "name": "s",
+                        "send": "1003",
+                        "transfer_data": {"segments": [{"address": 0x1000, "data_hex": "AA"}]},
+                        "sub_flow": self._sf,
+                    }
+                ],
+            )
+
+    def test_none_of_three_rejected(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            FlowDefinition(
+                name="bad",
+                steps=[{"name": "s"}],
+            )
+
+
+class TestSubFlowHookRestrictions:
+    """sub_flow step must not have before_hook, message_hook, after_hook, expect."""
+
+    _sf = "/flows/c.yaml"
+
+    def test_sub_flow_with_before_hook_rejected(self) -> None:
+        with pytest.raises(ValueError, match="before_hook"):
+            FlowDefinition(
+                name="bad",
+                steps=[
+                    {
+                        "name": "s",
+                        "sub_flow": self._sf,
+                        "before_hook": {"snippet": "pass"},
+                    }
+                ],
+            )
+
+    def test_sub_flow_with_message_hook_rejected(self) -> None:
+        with pytest.raises(ValueError, match="message_hook"):
+            FlowDefinition(
+                name="bad",
+                steps=[
+                    {
+                        "name": "s",
+                        "sub_flow": self._sf,
+                        "message_hook": {"snippet": "pass"},
+                    }
+                ],
+            )
+
+    def test_sub_flow_with_after_hook_rejected(self) -> None:
+        with pytest.raises(ValueError, match="after_hook"):
+            FlowDefinition(
+                name="bad",
+                steps=[
+                    {
+                        "name": "s",
+                        "sub_flow": self._sf,
+                        "after_hook": {"snippet": "pass"},
+                    }
+                ],
+            )
+
+    def test_sub_flow_with_expect_rejected(self) -> None:
+        with pytest.raises(ValueError, match="expect"):
+            FlowDefinition(
+                name="bad",
+                steps=[
+                    {
+                        "name": "s",
+                        "sub_flow": self._sf,
+                        "expect": {"response_prefix": "5003"},
+                    }
+                ],
+            )
+
+
+class TestRepeatBoundaryValues:
+    """repeat field boundary validation."""
+
+    def test_repeat_default_is_one(self) -> None:
+        flow = FlowDefinition(name="f", steps=[{"name": "s", "send": "1003"}])
+        assert flow.steps[0].repeat == 1
+
+    def test_repeat_zero_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            FlowDefinition(
+                name="f",
+                steps=[{"name": "s", "send": "1003", "repeat": 0}],
+            )
+
+    def test_repeat_negative_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            FlowDefinition(
+                name="f",
+                steps=[{"name": "s", "send": "1003", "repeat": -1}],
+            )
+
+    def test_repeat_five_accepted(self) -> None:
+        flow = FlowDefinition(
+            name="f",
+            steps=[{"name": "s", "send": "1003", "repeat": 5}],
+        )
+        assert flow.steps[0].repeat == 5
+
+
+class TestAddressingModeDefaults:
+    """addressing_mode on FlowStep and default_addressing_mode on FlowDefinition."""
+
+    def test_step_addressing_mode_default_is_inherit(self) -> None:
+        flow = FlowDefinition(name="f", steps=[{"name": "s", "send": "1003"}])
+        assert flow.steps[0].addressing_mode == "inherit"
+
+    def test_flow_default_addressing_mode_is_physical(self) -> None:
+        flow = FlowDefinition(name="f", steps=[{"name": "s", "send": "1003"}])
+        assert flow.default_addressing_mode == "physical"
+
+    def test_flow_default_addressing_mode_functional(self) -> None:
+        flow = FlowDefinition(
+            name="f",
+            default_addressing_mode="functional",
+            steps=[{"name": "s", "send": "1003"}],
+        )
+        assert flow.default_addressing_mode == "functional"
+
+    def test_step_explicit_addressing_mode(self) -> None:
+        flow = FlowDefinition(
+            name="f",
+            steps=[{"name": "s", "send": "1003", "addressing_mode": "functional"}],
+        )
+        assert flow.steps[0].addressing_mode == "functional"
