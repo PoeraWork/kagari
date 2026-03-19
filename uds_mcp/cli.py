@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import json
+from datetime import UTC, datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from uds_mcp.can.config import CanConfig
 from uds_mcp.can.interface import CanInterface
 from uds_mcp.config import AppConfig, load_config
 from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine, FlowStatus
+from uds_mcp.flow.report import (
+    FlowCaseReport,
+    FlowSuiteReport,
+    build_suite_report,
+    write_html_report,
+    write_json_report,
+    write_junit_report,
+)
 from uds_mcp.logging.exporters.blf import BlfExporter
 from uds_mcp.logging.store import EventStore
 from uds_mcp.uds.client import UdsClientService, UdsConfig
@@ -65,6 +78,41 @@ def main() -> None:
                 )
             )
             _print_json(result)
+            return
+
+        if args.command == "flow-suite":
+            suite = _resolve_flow_suite(args, config.flow_repo)
+            result = asyncio.run(
+                _run_flow_suite(
+                    app.flow_engine,
+                    suite["flow_paths"],
+                    suite_name=suite["suite_name"],
+                    timeout_s=suite["timeout_s"],
+                    stop_on_fail=suite["stop_on_fail"],
+                    verbose=args.verbose,
+                )
+            )
+
+            json_path = Path(args.report_json)
+            write_json_report(json_path, result)
+            outputs: dict[str, str] = {"json": json_path.as_posix()}
+
+            if args.report_html:
+                html_path = Path(args.report_html)
+                write_html_report(html_path, result)
+                outputs["html"] = html_path.as_posix()
+
+            if args.report_junit:
+                junit_path = Path(args.report_junit)
+                write_junit_report(junit_path, result)
+                outputs["junit"] = junit_path.as_posix()
+
+            _print_json(
+                {
+                    "suite": result.to_dict(),
+                    "reports": outputs,
+                }
+            )
             return
 
         raise ValueError(f"unsupported command: {args.command}")
@@ -166,6 +214,183 @@ async def _run_flow_once(
             blf_exporter.stop_streaming()
 
 
+async def _run_flow_suite(
+    flow_engine: FlowEngine,
+    paths: list[Path],
+    *,
+    suite_name: str,
+    timeout_s: float,
+    stop_on_fail: bool,
+    verbose: bool,
+) -> FlowSuiteReport:
+    started_at = datetime.now(UTC)
+    cases: list[FlowCaseReport] = []
+
+    for path in paths:
+        case_started = datetime.now(UTC)
+        status = await _run_flow_once(
+            flow_engine,
+            path,
+            wait=True,
+            timeout_s=timeout_s,
+            verbose=verbose,
+        )
+        case_ended = datetime.now(UTC)
+        case_status = str(status["status"])
+        passed = case_status == FlowStatus.DONE.value
+        cases.append(
+            FlowCaseReport(
+                flow_name=str(status.get("flow_name") or path.stem),
+                flow_path=path.as_posix(),
+                run_id=str(status.get("run_id") or ""),
+                status=case_status,
+                passed=passed,
+                duration_ms=max(int((case_ended - case_started).total_seconds() * 1000), 0),
+                step_count=int(status.get("step_count") or 0),
+                message_count=int(status.get("message_count") or 0),
+                error=(str(status["error"]) if status.get("error") is not None else None),
+                current_step=(
+                    str(status["current_step"]) if status.get("current_step") is not None else None
+                ),
+                trace=(status.get("trace") if isinstance(status.get("trace"), list) else None),
+            )
+        )
+        if stop_on_fail and not passed:
+            break
+
+    ended_at = datetime.now(UTC)
+    return build_suite_report(
+        suite_name=suite_name,
+        total=len(paths),
+        cases=cases,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
+
+def _resolve_flow_suite(args: argparse.Namespace, flow_repo: Path) -> dict[str, Any]:
+    include_specs: list[str] = list(getattr(args, "paths", []) or [])
+    include_specs.extend(list(getattr(args, "glob", []) or []))
+    exclude_patterns: list[str] = []
+    suite_name = str(args.suite_name or "flow-suite")
+    timeout_s = float(args.timeout_s)
+    stop_on_fail = bool(args.stop_on_fail)
+    base_dir = Path.cwd()
+
+    if args.suite:
+        suite_cfg = _load_suite_file(Path(args.suite))
+        include_specs.extend(suite_cfg["include_specs"])
+        exclude_patterns.extend(suite_cfg["exclude_patterns"])
+        if args.suite_name is None:
+            suite_name = suite_cfg["suite_name"]
+        if args.timeout_s == 0.0 and suite_cfg["timeout_s"] is not None:
+            timeout_s = suite_cfg["timeout_s"]
+        if not args.stop_on_fail:
+            stop_on_fail = suite_cfg["stop_on_fail"]
+        base_dir = suite_cfg["base_dir"]
+
+    if not include_specs:
+        include_specs.append(str(flow_repo / "*.yaml"))
+
+    flow_paths = _discover_flow_paths(
+        include_specs,
+        exclude_patterns=exclude_patterns,
+        base_dir=base_dir,
+    )
+    if not flow_paths:
+        raise ValueError("no flow files discovered for suite execution")
+
+    return {
+        "suite_name": suite_name,
+        "flow_paths": flow_paths,
+        "timeout_s": timeout_s,
+        "stop_on_fail": stop_on_fail,
+    }
+
+
+def _load_suite_file(path: Path) -> dict[str, Any]:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise TypeError("suite file must be a mapping")
+
+    include_raw = data.get("include", [])
+    if not isinstance(include_raw, list) or not all(isinstance(v, str) for v in include_raw):
+        raise TypeError("suite include must be an array of strings")
+
+    exclude_raw = data.get("exclude", [])
+    if not isinstance(exclude_raw, list) or not all(isinstance(v, str) for v in exclude_raw):
+        raise TypeError("suite exclude must be an array of strings")
+
+    name_raw = data.get("name", path.stem)
+    if not isinstance(name_raw, str):
+        raise TypeError("suite name must be a string")
+
+    timeout_raw = data.get("timeout_s")
+    timeout_s: float | None = None
+    if timeout_raw is not None:
+        if not isinstance(timeout_raw, int | float):
+            raise TypeError("suite timeout_s must be a number")
+        timeout_s = float(timeout_raw)
+
+    stop_on_fail_raw = data.get("stop_on_fail", False)
+    if not isinstance(stop_on_fail_raw, bool):
+        raise TypeError("suite stop_on_fail must be boolean")
+
+    return {
+        "suite_name": name_raw,
+        "include_specs": include_raw,
+        "exclude_patterns": exclude_raw,
+        "timeout_s": timeout_s,
+        "stop_on_fail": stop_on_fail_raw,
+        "base_dir": path.resolve().parent,
+    }
+
+
+def _discover_flow_paths(
+    include_specs: list[str],
+    *,
+    exclude_patterns: list[str],
+    base_dir: Path,
+) -> list[Path]:
+    discovered: set[Path] = set()
+    for spec in include_specs:
+        candidate = Path(spec)
+        if not candidate.is_absolute():
+            candidate = (base_dir / candidate).resolve()
+
+        if _has_glob_meta(spec):
+            pattern = str(candidate) if candidate.is_absolute() else spec
+            for matched in glob.glob(pattern, recursive=True):
+                found = Path(matched)
+                resolved = found.resolve()
+                if resolved.is_file() and resolved.suffix.lower() in {".yaml", ".yml"}:
+                    discovered.add(resolved)
+            continue
+
+        if candidate.is_dir():
+            for found in candidate.rglob("*.yaml"):
+                discovered.add(found.resolve())
+            for found in candidate.rglob("*.yml"):
+                discovered.add(found.resolve())
+            continue
+
+        if candidate.is_file() and candidate.suffix.lower() in {".yaml", ".yml"}:
+            discovered.add(candidate)
+
+    if not exclude_patterns:
+        return sorted(discovered)
+
+    return sorted(
+        item
+        for item in discovered
+        if not any(fnmatch(item.as_posix(), pattern) for pattern in exclude_patterns)
+    )
+
+
+def _has_glob_meta(value: str) -> bool:
+    return any(token in value for token in ("*", "?", "[", "]"))
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Direct CLI for uds-mcp runtime operations.")
     parser.add_argument(
@@ -224,6 +449,49 @@ def _build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Output full trace instead of simplified status summary.",
+    )
+
+    flow_suite = sub.add_parser("flow-suite", help="Run multiple flow YAML files and export report.")
+    flow_suite.add_argument(
+        "-c",
+        "--config",
+        help="Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml.",
+    )
+    flow_suite.add_argument(
+        "--suite",
+        help="Path to suite YAML with fields: name/include/exclude/timeout_s/stop_on_fail.",
+    )
+    flow_suite.add_argument(
+        "--path",
+        dest="paths",
+        action="append",
+        default=[],
+        help="Flow file path or directory (repeatable).",
+    )
+    flow_suite.add_argument(
+        "--glob",
+        action="append",
+        default=[],
+        help="Glob pattern to discover flow files (repeatable).",
+    )
+    flow_suite.add_argument("--suite-name", help="Override suite name in report.")
+    flow_suite.add_argument("--timeout-s", type=float, default=0.0, help="Per-flow timeout seconds.")
+    flow_suite.add_argument(
+        "--stop-on-fail",
+        action="store_true",
+        help="Stop suite execution immediately when one flow fails.",
+    )
+    flow_suite.add_argument(
+        "--report-json",
+        default="./flow-report.json",
+        help="Output JSON report path.",
+    )
+    flow_suite.add_argument("--report-html", help="Optional output HTML report path.")
+    flow_suite.add_argument("--report-junit", help="Optional output JUnit XML report path.")
+    flow_suite.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Store detailed trace in case records.",
     )
 
     return parser

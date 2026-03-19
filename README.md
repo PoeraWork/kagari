@@ -40,7 +40,52 @@ uv run uds-mcp-cli config-show
 uv run uds-mcp-cli uds-send 1003 --timeout-ms 1200 --addressing-mode physical
 uv run uds-mcp-cli flow-run ./examples/flows/demo_virtual_can_flow.yaml
 uv run uds-mcp-cli flow-run ./examples/flows/demo_virtual_can_flow.yaml --config ./uds.toml
+uv run uds-mcp-cli flow-suite --glob "./examples/flows/*.yaml" --report-html ./reports/flow-report.html
 ```
+
+## Flow Suite Runner (pytest-like)
+
+Use `flow-suite` for one-command batch execution and summary reports:
+
+```bash
+uv run uds-mcp-cli flow-suite --glob "./examples/flows/*.yaml"
+```
+
+Default output:
+
+- JSON report: `./flow-report.json`
+- Includes totals, pass/fail/skipped, pass rate, duration, and case details.
+
+Optional outputs:
+
+- `--report-html ./reports/flow-report.html` for lightweight browser viewing.
+- `--report-junit ./reports/flow-report.xml` for CI integration.
+
+Useful options:
+
+- `--path <file-or-dir>` (repeatable)
+- `--glob <pattern>` (repeatable)
+- `--suite ./suite.yaml` (suite config file)
+- `--timeout-s <seconds>` (per-flow timeout)
+- `--stop-on-fail` (pytest `-x` style)
+
+Example suite file:
+
+```yaml
+name: smoke
+include:
+    - examples/flows/*.yaml
+exclude:
+    - "*draft*"
+timeout_s: 3.0
+stop_on_fail: false
+```
+
+Notes:
+
+- This built-in report path is intentionally lightweight and dependency-free.
+- Allure can be added later through adapters, but the built-in JSON/HTML/JUnit path is faster to adopt and easier to maintain.
+- Report payload fields are plain English keys (`passed`, `failed`, `pass_rate`) and can be localized by post-processing if needed.
 
 Startup config behavior:
 
