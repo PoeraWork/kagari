@@ -3,7 +3,7 @@
 UDS MCP server skeleton based on official Python MCP SDK `mcp` (`FastMCP`),
 with `py-uds + python-can` as communication foundation.
 
-## Current MVP Scope
+## Current Scope
 
 - Send CAN frame and inspect CAN TX/RX logs.
 - Send UDS request and inspect UDS response.
