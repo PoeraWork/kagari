@@ -202,6 +202,7 @@ def flow_run(
     type=str,
     help="Glob pattern to discover flow files (repeatable).",
 )
+@click.argument("trailing_specs", nargs=-1)
 @click.option("--suite-name", type=str, default=None, help="Override suite name in report.")
 @click.option("--timeout-s", type=float, default=0.0, show_default=True, help="Per-flow timeout seconds.")
 @click.option(
@@ -234,6 +235,7 @@ def flow_suite(
     suite: Path | None,
     paths: tuple[str, ...],
     globs: tuple[str, ...],
+    trailing_specs: tuple[str, ...],
     suite_name: str | None,
     timeout_s: float,
     *,
@@ -244,9 +246,11 @@ def flow_suite(
     verbose: bool,
 ) -> None:
     config, _ = _load_and_prepare_config(config_path)
+    merged_paths = list(paths)
+    merged_paths.extend(trailing_specs)
     suite_payload = _resolve_flow_suite(
         suite=suite,
-        paths=list(paths),
+        paths=merged_paths,
         globs=list(globs),
         suite_name=suite_name,
         timeout_s=timeout_s,
