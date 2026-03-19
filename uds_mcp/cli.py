@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import glob
 import json
@@ -9,6 +8,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
+import click
 import yaml
 
 from uds_mcp.can.config import CanConfig
@@ -30,94 +30,269 @@ from uds_mcp.uds.client import UdsClientService, UdsConfig
 
 
 def main() -> None:
-    parser = _build_parser()
-    args = parser.parse_args()
+    cli(standalone_mode=True)
 
-    config_value = getattr(args, "config", None)
-    config_path = Path(config_value) if config_value else None
-    config, source = load_config(default_path=config_path)
-    config.flow_repo.mkdir(parents=True, exist_ok=True)
-    config.extension_whitelist.mkdir(parents=True, exist_ok=True)
 
-    if args.command == "config-show":
-        _print_json({"source": source, "config": config.to_dict()})
-        return
+_CONFIG_HELP = "Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml."
+
+
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+def cli() -> None:
+    """Direct CLI for uds-mcp runtime operations."""
+
+
+@cli.command("config-show")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help=_CONFIG_HELP,
+)
+def config_show(config_path: Path | None) -> None:
+    config, source = _load_and_prepare_config(config_path)
+    _print_json({"source": source, "config": config.to_dict()})
+
+
+@cli.command("can-send")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help=_CONFIG_HELP,
+)
+@click.argument("arbitration_id")
+@click.argument("data_hex")
+@click.option("--extended", is_flag=True, default=False, help="Use extended CAN ID.")
+def can_send(config_path: Path | None, arbitration_id: str, data_hex: str, *, extended: bool) -> None:
+    config, _ = _load_and_prepare_config(config_path)
+    app = _CliRuntime(config)
+    try:
+        app.can.send_frame(
+            arbitration_id=_parse_int(arbitration_id),
+            data=bytes.fromhex(data_hex),
+            is_extended_id=extended,
+        )
+        _print_json({"ok": True})
+    finally:
+        app.close()
+
+
+@cli.command("uds-send")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help=_CONFIG_HELP,
+)
+@click.argument("request_hex")
+@click.option("--timeout-ms", type=int, default=1000, show_default=True, help="Timeout in milliseconds.")
+@click.option(
+    "--addressing-mode",
+    type=click.Choice(["physical", "functional"], case_sensitive=True),
+    default="physical",
+    show_default=True,
+    help="UDS addressing mode.",
+)
+def uds_send(
+    config_path: Path | None,
+    request_hex: str,
+    *,
+    timeout_ms: int,
+    addressing_mode: str,
+) -> None:
+    config, _ = _load_and_prepare_config(config_path)
+    app = _CliRuntime(config)
+    try:
+        result = asyncio.run(
+            app.uds.send(
+                request_hex,
+                timeout_ms=timeout_ms,
+                addressing_mode=addressing_mode,
+            )
+        )
+        _print_json(result)
+    finally:
+        app.close()
+
+
+@cli.command("flow-run")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help=_CONFIG_HELP,
+)
+@click.argument("path", type=click.Path(path_type=Path, dir_okay=False, exists=True))
+@click.option("--no-wait", is_flag=True, default=False, help="Return immediately after start.")
+@click.option("--timeout-s", type=float, default=0.0, show_default=True, help="Optional timeout seconds.")
+@click.option(
+    "--blf-output",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Path to BLF file for streaming CAN events during flow execution.",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Output full trace instead of simplified status summary.",
+)
+def flow_run(
+    config_path: Path | None,
+    path: Path,
+    *,
+    no_wait: bool,
+    timeout_s: float,
+    blf_output: Path | None,
+    verbose: bool,
+) -> None:
+    config, _ = _load_and_prepare_config(config_path)
+    app = _CliRuntime(config)
+    try:
+        result = asyncio.run(
+            _run_flow_once(
+                app.flow_engine,
+                path,
+                wait=not no_wait,
+                timeout_s=timeout_s,
+                blf_output=blf_output,
+                verbose=verbose,
+                event_store=app.event_store,
+            )
+        )
+        _print_json(result)
+    finally:
+        app.close()
+
+
+@cli.command("flow-suite")
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help=_CONFIG_HELP,
+)
+@click.option(
+    "--suite",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    default=None,
+    help="Path to suite YAML with fields: name/include/exclude/timeout_s/stop_on_fail.",
+)
+@click.option(
+    "--path",
+    "paths",
+    multiple=True,
+    type=str,
+    help="Flow file path or directory (repeatable).",
+)
+@click.option(
+    "--glob",
+    "globs",
+    multiple=True,
+    type=str,
+    help="Glob pattern to discover flow files (repeatable).",
+)
+@click.option("--suite-name", type=str, default=None, help="Override suite name in report.")
+@click.option("--timeout-s", type=float, default=0.0, show_default=True, help="Per-flow timeout seconds.")
+@click.option(
+    "--stop-on-fail",
+    is_flag=True,
+    default=False,
+    help="Stop suite execution immediately when one flow fails.",
+)
+@click.option("--report-json", type=click.Path(path_type=Path, dir_okay=False), default=Path("./flow-report.json"), show_default=True, help="Output JSON report path.")
+@click.option(
+    "--report-html",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Optional output HTML report path.",
+)
+@click.option(
+    "--report-junit",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Optional output JUnit XML report path.",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Store detailed trace in case records.",
+)
+def flow_suite(
+    config_path: Path | None,
+    suite: Path | None,
+    paths: tuple[str, ...],
+    globs: tuple[str, ...],
+    suite_name: str | None,
+    timeout_s: float,
+    *,
+    stop_on_fail: bool,
+    report_json: Path,
+    report_html: Path | None,
+    report_junit: Path | None,
+    verbose: bool,
+) -> None:
+    config, _ = _load_and_prepare_config(config_path)
+    suite_payload = _resolve_flow_suite(
+        suite=suite,
+        paths=list(paths),
+        globs=list(globs),
+        suite_name=suite_name,
+        timeout_s=timeout_s,
+        stop_on_fail=stop_on_fail,
+        flow_repo=config.flow_repo,
+    )
 
     app = _CliRuntime(config)
     try:
-        if args.command == "can-send":
-            app.can.send_frame(
-                arbitration_id=_parse_int(args.arbitration_id),
-                data=bytes.fromhex(args.data_hex),
-                is_extended_id=args.extended,
+        result = asyncio.run(
+            _run_flow_suite(
+                app.flow_engine,
+                suite_payload["flow_paths"],
+                suite_name=suite_payload["suite_name"],
+                timeout_s=suite_payload["timeout_s"],
+                stop_on_fail=suite_payload["stop_on_fail"],
+                verbose=verbose,
             )
-            _print_json({"ok": True})
-            return
+        )
 
-        if args.command == "uds-send":
-            result = asyncio.run(
-                app.uds.send(
-                    args.request_hex,
-                    timeout_ms=args.timeout_ms,
-                    addressing_mode=args.addressing_mode,
-                )
-            )
-            _print_json(result)
-            return
+        write_json_report(report_json, result)
+        outputs: dict[str, str] = {"json": report_json.as_posix()}
 
-        if args.command == "flow-run":
-            result = asyncio.run(
-                _run_flow_once(
-                    app.flow_engine,
-                    Path(args.path),
-                    wait=not args.no_wait,
-                    timeout_s=args.timeout_s,
-                    blf_output=Path(args.blf_output) if args.blf_output else None,
-                    verbose=args.verbose,
-                    event_store=app.event_store,
-                )
-            )
-            _print_json(result)
-            return
+        if report_html is not None:
+            write_html_report(report_html, result)
+            outputs["html"] = report_html.as_posix()
 
-        if args.command == "flow-suite":
-            suite = _resolve_flow_suite(args, config.flow_repo)
-            result = asyncio.run(
-                _run_flow_suite(
-                    app.flow_engine,
-                    suite["flow_paths"],
-                    suite_name=suite["suite_name"],
-                    timeout_s=suite["timeout_s"],
-                    stop_on_fail=suite["stop_on_fail"],
-                    verbose=args.verbose,
-                )
-            )
+        if report_junit is not None:
+            write_junit_report(report_junit, result)
+            outputs["junit"] = report_junit.as_posix()
 
-            json_path = Path(args.report_json)
-            write_json_report(json_path, result)
-            outputs: dict[str, str] = {"json": json_path.as_posix()}
-
-            if args.report_html:
-                html_path = Path(args.report_html)
-                write_html_report(html_path, result)
-                outputs["html"] = html_path.as_posix()
-
-            if args.report_junit:
-                junit_path = Path(args.report_junit)
-                write_junit_report(junit_path, result)
-                outputs["junit"] = junit_path.as_posix()
-
-            _print_json(
-                {
-                    "suite": result.to_dict(),
-                    "reports": outputs,
-                }
-            )
-            return
-
-        raise ValueError(f"unsupported command: {args.command}")
+        _print_json(
+            {
+                "suite": result.to_dict(),
+                "reports": outputs,
+            }
+        )
     finally:
         app.close()
+
+
+def _load_and_prepare_config(config_path: Path | None) -> tuple[AppConfig, str]:
+    config, source = load_config(default_path=config_path)
+    config.flow_repo.mkdir(parents=True, exist_ok=True)
+    config.extension_whitelist.mkdir(parents=True, exist_ok=True)
+    return config, source
 
 
 class _CliRuntime:
@@ -268,25 +443,34 @@ async def _run_flow_suite(
     )
 
 
-def _resolve_flow_suite(args: argparse.Namespace, flow_repo: Path) -> dict[str, Any]:
-    include_specs: list[str] = list(getattr(args, "paths", []) or [])
-    include_specs.extend(list(getattr(args, "glob", []) or []))
+def _resolve_flow_suite(
+    *,
+    suite: Path | None,
+    paths: list[str],
+    globs: list[str],
+    suite_name: str | None,
+    timeout_s: float,
+    stop_on_fail: bool,
+    flow_repo: Path,
+) -> dict[str, Any]:
+    include_specs: list[str] = list(paths)
+    include_specs.extend(globs)
     exclude_patterns: list[str] = []
-    suite_name = str(args.suite_name or "flow-suite")
-    timeout_s = float(args.timeout_s)
-    stop_on_fail = bool(args.stop_on_fail)
+    resolved_suite_name = str(suite_name or "flow-suite")
+    resolved_timeout_s = float(timeout_s)
+    resolved_stop_on_fail = bool(stop_on_fail)
     base_dir = Path.cwd()
 
-    if args.suite:
-        suite_cfg = _load_suite_file(Path(args.suite))
+    if suite is not None:
+        suite_cfg = _load_suite_file(suite)
         include_specs.extend(suite_cfg["include_specs"])
         exclude_patterns.extend(suite_cfg["exclude_patterns"])
-        if args.suite_name is None:
-            suite_name = suite_cfg["suite_name"]
-        if args.timeout_s == 0.0 and suite_cfg["timeout_s"] is not None:
-            timeout_s = suite_cfg["timeout_s"]
-        if not args.stop_on_fail:
-            stop_on_fail = suite_cfg["stop_on_fail"]
+        if suite_name is None:
+            resolved_suite_name = suite_cfg["suite_name"]
+        if timeout_s == 0.0 and suite_cfg["timeout_s"] is not None:
+            resolved_timeout_s = suite_cfg["timeout_s"]
+        if not stop_on_fail:
+            resolved_stop_on_fail = suite_cfg["stop_on_fail"]
         base_dir = suite_cfg["base_dir"]
 
     if not include_specs:
@@ -298,13 +482,13 @@ def _resolve_flow_suite(args: argparse.Namespace, flow_repo: Path) -> dict[str, 
         base_dir=base_dir,
     )
     if not flow_paths:
-        raise ValueError("no flow files discovered for suite execution")
+        raise click.ClickException("no flow files discovered for suite execution")
 
     return {
-        "suite_name": suite_name,
+        "suite_name": resolved_suite_name,
         "flow_paths": flow_paths,
-        "timeout_s": timeout_s,
-        "stop_on_fail": stop_on_fail,
+        "timeout_s": resolved_timeout_s,
+        "stop_on_fail": resolved_stop_on_fail,
     }
 
 
@@ -389,112 +573,6 @@ def _discover_flow_paths(
 
 def _has_glob_meta(value: str) -> bool:
     return any(token in value for token in ("*", "?", "[", "]"))
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Direct CLI for uds-mcp runtime operations.")
-    parser.add_argument(
-        "-c",
-        "--config",
-        help="Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml.",
-    )
-
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    config_show = sub.add_parser("config-show", help="Show effective config and source.")
-    config_show.add_argument(
-        "-c",
-        "--config",
-        help="Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml.",
-    )
-
-    can_send = sub.add_parser("can-send", help="Send one CAN frame.")
-    can_send.add_argument(
-        "-c",
-        "--config",
-        help="Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml.",
-    )
-    can_send.add_argument("arbitration_id", help="Arbitration ID (e.g. 0x7E0).")
-    can_send.add_argument("data_hex", help="Payload hex string.")
-    can_send.add_argument("--extended", action="store_true", help="Use extended CAN ID.")
-
-    uds_send = sub.add_parser("uds-send", help="Send one UDS request.")
-    uds_send.add_argument(
-        "-c",
-        "--config",
-        help="Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml.",
-    )
-    uds_send.add_argument("request_hex", help="UDS request hex string.")
-    uds_send.add_argument("--timeout-ms", type=int, default=1000, help="Timeout in milliseconds.")
-    uds_send.add_argument(
-        "--addressing-mode",
-        choices=["physical", "functional"],
-        default="physical",
-        help="UDS addressing mode.",
-    )
-
-    flow_run = sub.add_parser("flow-run", help="Load and execute a flow YAML once.")
-    flow_run.add_argument(
-        "-c",
-        "--config",
-        help="Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml.",
-    )
-    flow_run.add_argument("path", help="Path to flow YAML file.")
-    flow_run.add_argument("--no-wait", action="store_true", help="Return immediately after start.")
-    flow_run.add_argument("--timeout-s", type=float, default=0.0, help="Optional timeout seconds.")
-    flow_run.add_argument(
-        "--blf-output", help="Path to BLF file for streaming CAN events during flow execution."
-    )
-    flow_run.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Output full trace instead of simplified status summary.",
-    )
-
-    flow_suite = sub.add_parser("flow-suite", help="Run multiple flow YAML files and export report.")
-    flow_suite.add_argument(
-        "-c",
-        "--config",
-        help="Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.toml.",
-    )
-    flow_suite.add_argument(
-        "--suite",
-        help="Path to suite YAML with fields: name/include/exclude/timeout_s/stop_on_fail.",
-    )
-    flow_suite.add_argument(
-        "--path",
-        dest="paths",
-        action="append",
-        default=[],
-        help="Flow file path or directory (repeatable).",
-    )
-    flow_suite.add_argument(
-        "--glob",
-        action="append",
-        default=[],
-        help="Glob pattern to discover flow files (repeatable).",
-    )
-    flow_suite.add_argument("--suite-name", help="Override suite name in report.")
-    flow_suite.add_argument("--timeout-s", type=float, default=0.0, help="Per-flow timeout seconds.")
-    flow_suite.add_argument(
-        "--stop-on-fail",
-        action="store_true",
-        help="Stop suite execution immediately when one flow fails.",
-    )
-    flow_suite.add_argument(
-        "--report-json",
-        default="./flow-report.json",
-        help="Output JSON report path.",
-    )
-    flow_suite.add_argument("--report-html", help="Optional output HTML report path.")
-    flow_suite.add_argument("--report-junit", help="Optional output JUnit XML report path.")
-    flow_suite.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Store detailed trace in case records.",
-    )
-
-    return parser
 
 
 def _parse_int(value: str) -> int:
