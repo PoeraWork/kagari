@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
@@ -22,6 +22,14 @@ class FlowCaseReport:
     error: str | None
     current_step: str | None
     trace: list[dict[str, Any]] | None = None
+    failure_reason: str | None = None
+    failure_step: str | None = None
+    expected_prefix: str | None = None
+    actual_prefix: str | None = None
+    last_request_hex: str | None = None
+    last_response_hex: str | None = None
+    failed_step_trace: list[dict[str, Any]] | None = None
+    assertions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -87,66 +95,121 @@ def write_json_report(path: Path, report: FlowSuiteReport) -> None:
 
 
 def write_junit_report(path: Path, report: FlowSuiteReport) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    suite = ElementTree.Element(
-        "testsuite",
-        {
-            "name": report.suite_name,
-            "tests": str(report.executed),
-            "failures": str(report.failed),
-            "errors": "0",
-            "skipped": str(report.skipped),
-            "time": f"{report.duration_ms / 1000:.3f}",
-        },
+  path.parent.mkdir(parents=True, exist_ok=True)
+  suite = ElementTree.Element(
+    "testsuite",
+    {
+      "name": report.suite_name,
+      "tests": str(report.executed),
+      "failures": str(report.failed),
+      "errors": "0",
+      "skipped": str(report.skipped),
+      "time": f"{report.duration_ms / 1000:.3f}",
+    },
+  )
+
+  for case in report.cases:
+    testcase = ElementTree.SubElement(
+      suite,
+      "testcase",
+      {
+        "classname": report.suite_name,
+        "name": case.flow_name,
+        "time": f"{case.duration_ms / 1000:.3f}",
+      },
     )
+    properties = ElementTree.SubElement(testcase, "properties")
+    ElementTree.SubElement(
+      properties,
+      "property",
+      {"name": "flow_path", "value": case.flow_path},
+    )
+    ElementTree.SubElement(
+      properties,
+      "property",
+      {"name": "run_id", "value": case.run_id},
+    )
+    ElementTree.SubElement(
+      properties,
+      "property",
+      {"name": "status", "value": case.status},
+    )
+    if case.failure_reason is not None:
+      ElementTree.SubElement(
+        properties,
+        "property",
+        {"name": "failure_reason", "value": case.failure_reason},
+      )
+    if case.failure_step is not None:
+      ElementTree.SubElement(
+        properties,
+        "property",
+        {"name": "failure_step", "value": case.failure_step},
+      )
+    if case.expected_prefix is not None:
+      ElementTree.SubElement(
+        properties,
+        "property",
+        {"name": "expected_prefix", "value": case.expected_prefix},
+      )
+    if case.actual_prefix is not None:
+      ElementTree.SubElement(
+        properties,
+        "property",
+        {"name": "actual_prefix", "value": case.actual_prefix},
+      )
 
-    for case in report.cases:
-        testcase = ElementTree.SubElement(
-            suite,
-            "testcase",
-            {
-                "classname": report.suite_name,
-                "name": case.flow_name,
-                "time": f"{case.duration_ms / 1000:.3f}",
-            },
-        )
-        properties = ElementTree.SubElement(testcase, "properties")
-        ElementTree.SubElement(properties, "property", {"name": "flow_path", "value": case.flow_path})
-        ElementTree.SubElement(properties, "property", {"name": "run_id", "value": case.run_id})
-        ElementTree.SubElement(properties, "property", {"name": "status", "value": case.status})
+    if not case.passed:
+      failure = ElementTree.SubElement(
+        testcase,
+        "failure",
+        {
+          "message": case.failure_reason
+          or case.error
+          or f"flow ended with status {case.status}",
+          "type": "FlowFailure",
+        },
+      )
+      lines = [
+        f"status={case.status}",
+        f"current_step={case.current_step}",
+        f"failure_step={case.failure_step}",
+        f"failure_reason={case.failure_reason}",
+        f"expected_prefix={case.expected_prefix}",
+        f"actual_prefix={case.actual_prefix}",
+        f"last_request_hex={case.last_request_hex}",
+        f"last_response_hex={case.last_response_hex}",
+        f"error={case.error}",
+      ]
+      if case.assertions:
+        lines.append("assertions=" + json.dumps(case.assertions, ensure_ascii=True))
+      failure.text = "\n".join(lines)
 
-        if not case.passed:
-            failure = ElementTree.SubElement(
-                testcase,
-                "failure",
-                {
-                    "message": case.error or f"flow ended with status {case.status}",
-                    "type": "FlowFailure",
-                },
-            )
-            failure.text = case.error or f"status={case.status}, current_step={case.current_step}"
-
-    xml_bytes = ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True)
-    path.write_bytes(xml_bytes)
+  xml_bytes = ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True)
+  path.write_bytes(xml_bytes)
 
 
 def write_html_report(path: Path, report: FlowSuiteReport) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rows: list[str] = []
-    for case in report.cases:
-        status_class = "ok" if case.passed else "bad"
-        rows.append(
-            "<tr>"
-            f"<td>{escape(case.flow_name)}</td>"
-            f"<td>{escape(case.status)}</td>"
-            f"<td class='{status_class}'>{'PASS' if case.passed else 'FAIL'}</td>"
-            f"<td>{case.duration_ms}</td>"
-            f"<td>{case.step_count}</td>"
-            f"<td>{case.message_count}</td>"
-            f"<td>{escape(case.current_step or '-')}</td>"
-            f"<td>{escape(case.error or '-')}</td>"
-            "</tr>"
-        )
+  path.parent.mkdir(parents=True, exist_ok=True)
+  rows: list[str] = []
+  for case in report.cases:
+    status_class = "ok" if case.passed else "bad"
+    rows.append(
+      "<tr>"
+      f"<td>{escape(case.flow_name)}</td>"
+      f"<td>{escape(case.status)}</td>"
+      f"<td class='{status_class}'>{'PASS' if case.passed else 'FAIL'}</td>"
+      f"<td>{case.duration_ms}</td>"
+      f"<td>{case.step_count}</td>"
+      f"<td>{case.message_count}</td>"
+      f"<td>{escape(case.current_step or '-')}</td>"
+      "<td>"
+      f"<div>{escape(case.failure_reason or case.error or '-')}</div>"
+      f"<div><small>step={escape(case.failure_step or '-')} req={escape(case.last_request_hex or '-')} rsp={escape(case.last_response_hex or '-')}</small></div>"
+      f"<details><summary>assertions</summary><pre>{escape(json.dumps(case.assertions, ensure_ascii=True, indent=2))}</pre></details>"
+      "</td>"
+      "</tr>"
+    )
 
     html = """<!doctype html>
 <html lang=\"en\">
