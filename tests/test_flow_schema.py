@@ -102,6 +102,81 @@ def test_load_flow_yaml_resolves_hook_path_relative_to_yaml_file(tmp_path: Path)
     assert hook.script_path == str((tmp_path / "extensions" / "demo_hook.py").resolve())
 
 
+def test_step_expect_assertions_accepts_byte_and_range_rules() -> None:
+    flow = FlowDefinition(
+        name="assertions_demo",
+        steps=[
+            {
+                "name": "read_did",
+                "send": "22ABCD",
+                "expect": {
+                    "response_prefix": "62",
+                    "assertions": [
+                        {
+                            "name": "sid_ok",
+                            "kind": "byte_eq",
+                            "source": "response_hex",
+                            "index": 0,
+                            "value": 0x62,
+                            "on_fail": "fatal",
+                        },
+                        {
+                            "name": "payload_range",
+                            "kind": "bytes_int_range",
+                            "source": "response_hex",
+                            "start": 1,
+                            "length": 2,
+                            "min_value": 0xABCD,
+                            "max_value": 0xABCD,
+                            "on_fail": "record",
+                        },
+                    ],
+                },
+            }
+        ],
+    )
+    assert len(flow.steps[0].expect.assertions) == 2
+
+
+def test_step_expect_assertions_reject_missing_required_fields() -> None:
+    with pytest.raises(ValueError, match="requires index and value"):
+        FlowDefinition(
+            name="assertions_bad",
+            steps=[
+                {
+                    "name": "read_did",
+                    "send": "22ABCD",
+                    "expect": {
+                        "assertions": [
+                            {
+                                "kind": "byte_eq",
+                                "source": "response_hex",
+                                "index": 0,
+                            }
+                        ]
+                    },
+                }
+            ],
+        )
+
+
+def test_step_expect_response_matchers_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError, match="at most one"):
+        FlowDefinition(
+            name="bad_matchers",
+            steps=[
+                {
+                    "name": "read_did",
+                    "send": "22ABCD",
+                    "expect": {
+                        "response_prefix": "62",
+                        "response_regex": "^62.*$",
+                    },
+                }
+            ],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Task 1.6 – Unit tests for schema 变更
 # Requirements: 1.1, 1.2, 1.5, 3.1, 3.7, 9.1, 9.2, 9.7

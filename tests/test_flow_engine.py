@@ -9,6 +9,7 @@ from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine, FlowStatus
 from uds_mcp.flow.schema import FlowDefinition
 from uds_mcp.logging.store import EventStore
+from uds_mcp.models.events import EventKind
 
 
 class _FakeUdsClient:
@@ -587,7 +588,8 @@ def test_transfer_data_fails_fast_on_unexpected_response_by_default() -> None:
         final = await _wait_run_done(engine, run_id)
 
         assert final["status"] == FlowStatus.FAILED.value
-        assert "transfer_data expect prefix 76" in str(final["error"])
+        assert "fatal assertion failed" in str(final["error"])
+        assert "expect response_prefix 76" in str(final["error"])
 
     asyncio.run(_run())
 
@@ -642,6 +644,75 @@ def test_transfer_data_can_disable_per_message_check_for_negative_hook_logic() -
     asyncio.run(_run())
 
 
+def test_expect_response_regex_matches() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="expect_response_regex_ok",
+            steps=[
+                {
+                    "name": "read_did",
+                    "send": "22ABCD",
+                    "expect": {
+                        "response_regex": r"^62ABCD[0-9A-F]{2}$",
+                    },
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+
+    asyncio.run(_run())
+
+
+def test_expect_response_regex_record_mode_keeps_flow_running() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        store = EventStore()
+        engine = FlowEngine(_FakeUdsClient(), store, runtime)
+
+        flow = FlowDefinition(
+            name="expect_response_regex_record",
+            steps=[
+                {
+                    "name": "read_did",
+                    "send": "22ABCD",
+                    "expect": {
+                        "response_regex": r"^67.*$",
+                        "response_on_fail": "record",
+                    },
+                },
+                {
+                    "name": "next_step",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        errors = [
+            e
+            for e in store.query(kinds=[EventKind.ERROR])
+            if e.payload.get("source") == "flow_assertion"
+            and e.payload.get("name") == "expect.response_regex"
+        ]
+        assert len(errors) == 1
+        assert errors[0].payload["on_fail"] == "record"
+
+    asyncio.run(_run())
+
+
 def test_flow_variables_path_keys_resolve_relative_to_yaml_dir(tmp_path: Path) -> None:
     async def _run() -> None:
         runtime = ExtensionRuntime([tmp_path.resolve()])
@@ -692,6 +763,141 @@ def test_flow_variables_path_keys_resolve_relative_to_yaml_dir(tmp_path: Path) -
         assert final["status"] == FlowStatus.DONE.value
         trace = engine.get_trace(run_id)
         assert trace[1]["request_hex"] == "22ABCD"
+
+    asyncio.run(_run())
+
+
+def test_expect_assertion_record_mode_keeps_flow_running() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        store = EventStore()
+        engine = FlowEngine(_FakeUdsClient(), store, runtime)
+
+        flow = FlowDefinition(
+            name="expect_record_mode",
+            steps=[
+                {
+                    "name": "read_did",
+                    "send": "22ABCD",
+                    "expect": {
+                        "assertions": [
+                            {
+                                "name": "intentional_record",
+                                "kind": "byte_eq",
+                                "source": "response_hex",
+                                "index": 0,
+                                "value": 0x00,
+                                "on_fail": "record",
+                            }
+                        ]
+                    },
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        errors = [
+            e
+            for e in store.query(kinds=[EventKind.ERROR])
+            if e.payload.get("source") == "flow_assertion"
+        ]
+        assert len(errors) == 1
+        assert errors[0].payload["on_fail"] == "record"
+        assert errors[0].payload["name"] == "intentional_record"
+
+    asyncio.run(_run())
+
+
+def test_expect_assertion_fatal_mode_stops_flow() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(_FakeUdsClient(), EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="expect_fatal_mode",
+            steps=[
+                {
+                    "name": "read_did",
+                    "send": "22ABCD",
+                    "expect": {
+                        "assertions": [
+                            {
+                                "name": "fatal_check",
+                                "kind": "byte_eq",
+                                "source": "response_hex",
+                                "index": 0,
+                                "value": 0x00,
+                                "on_fail": "fatal",
+                            }
+                        ]
+                    },
+                },
+                {
+                    "name": "next_step_should_not_run",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.FAILED.value
+        assert "fatal assertion failed" in str(final["error"])
+        trace = engine.get_trace(run_id)
+        assert [item["step"] for item in trace] == ["read_did"]
+
+    asyncio.run(_run())
+
+
+def test_after_hook_assertions_support_multiple_checks() -> None:
+    async def _run() -> None:
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        store = EventStore()
+        engine = FlowEngine(_FakeUdsClient(), store, runtime)
+
+        flow = FlowDefinition(
+            name="hook_multi_assertions",
+            steps=[
+                {
+                    "name": "read_did",
+                    "send": "22ABCD",
+                    "after_hook": {
+                        "snippet": (
+                            'assertions.response_byte_eq(0, 0x62, name="sid_ok", on_fail="fatal")\n'
+                            "assertions.response_bytes_int_range(\n"
+                            "    1,\n"
+                            "    2,\n"
+                            "    min_value=0xAB00,\n"
+                            "    max_value=0xABFF,\n"
+                            '    name="did_range",\n'
+                            '    on_fail="record",\n'
+                            ")\n"
+                            "result = {}\n"
+                        )
+                    },
+                    "expect": {"response_prefix": "62"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        errors = [
+            e
+            for e in store.query(kinds=[EventKind.ERROR])
+            if e.payload.get("source") == "flow_assertion"
+        ]
+        assert errors == []
 
     asyncio.run(_run())
 

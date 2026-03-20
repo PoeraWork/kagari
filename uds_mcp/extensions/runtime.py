@@ -46,7 +46,11 @@ class ExtensionRuntime:
 
     def run_snippet(self, *, code: str, context: dict[str, Any]) -> dict[str, Any]:
         globals_dict: dict[str, Any] = {"__name__": "__hook__"}
-        locals_dict: dict[str, Any] = {"context": context, "result": {}}
+        locals_dict: dict[str, Any] = {
+            "context": context,
+            "assertions": context.get("assertions"),
+            "result": {},
+        }
         exec(code, globals_dict, locals_dict)  # noqa: S102
         result = locals_dict.get("result", {})
         if not isinstance(result, dict):

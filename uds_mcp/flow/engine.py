@@ -14,6 +14,7 @@ import yaml
 from uds_mcp.flow.schema import (
     FlowDefinition,
     FlowStep,
+    StepAssertion,
     StepExpect,
     TransferDataConfig,
     TransferSegment,
@@ -46,6 +47,196 @@ class FlowRun:
     trace: list[dict[str, Any]] = field(default_factory=list)
     stop_requested: bool = False
     pause_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class FlowAssertionError(RuntimeError):
+    pass
+
+
+class FlowAssertionFatalError(FlowAssertionError):
+    pass
+
+
+@dataclass(slots=True)
+class _AssertionResult:
+    ok: bool
+    on_fail: Literal["record", "fail", "fatal"]
+    message: str
+    name: str | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
+
+
+class _HookAssertions:
+    def __init__(self, context: dict[str, Any]) -> None:
+        self._context = context
+        self._results: list[_AssertionResult] = []
+
+    @property
+    def results(self) -> list[_AssertionResult]:
+        return self._results
+
+    def true(
+        self,
+        *,
+        condition: bool,
+        name: str | None = None,
+        on_fail: Literal["record", "fail", "fatal"] = "fail",
+        message: str | None = None,
+    ) -> None:
+        if condition:
+            return
+        self._results.append(
+            _AssertionResult(
+                ok=False,
+                on_fail=on_fail,
+                name=name,
+                message=message or "hook assertion condition is false",
+            )
+        )
+
+    def response_byte_eq(
+        self,
+        index: int,
+        value: int,
+        *,
+        name: str | None = None,
+        on_fail: Literal["record", "fail", "fatal"] = "fail",
+        message: str | None = None,
+    ) -> None:
+        self.byte_eq(
+            hex_value=self._current_hex("response_hex"),
+            index=index,
+            value=value,
+            name=name,
+            on_fail=on_fail,
+            message=message,
+            source="response_hex",
+        )
+
+    def response_bytes_int_range(
+        self,
+        start: int,
+        length: int,
+        *,
+        min_value: int | None = None,
+        max_value: int | None = None,
+        endian: Literal["big", "little"] = "big",
+        name: str | None = None,
+        on_fail: Literal["record", "fail", "fatal"] = "fail",
+        message: str | None = None,
+    ) -> None:
+        self.bytes_int_range(
+            hex_value=self._current_hex("response_hex"),
+            start=start,
+            length=length,
+            min_value=min_value,
+            max_value=max_value,
+            endian=endian,
+            name=name,
+            on_fail=on_fail,
+            message=message,
+            source="response_hex",
+        )
+
+    def byte_eq(
+        self,
+        *,
+        hex_value: str,
+        index: int,
+        value: int,
+        name: str | None = None,
+        on_fail: Literal["record", "fail", "fatal"] = "fail",
+        message: str | None = None,
+        source: str = "hex_value",
+    ) -> None:
+        data = bytes.fromhex(_normalize_hex(hex_value, field_name=source))
+        if index >= len(data):
+            self._results.append(
+                _AssertionResult(
+                    ok=False,
+                    on_fail=on_fail,
+                    name=name,
+                    message=message
+                    or f"{source} byte index out of range: index={index}, length={len(data)}",
+                )
+            )
+            return
+
+        actual = data[index]
+        if actual == value:
+            return
+
+        self._results.append(
+            _AssertionResult(
+                ok=False,
+                on_fail=on_fail,
+                name=name,
+                message=message
+                or f"{source} byte[{index}] expected 0x{value:02X}, got 0x{actual:02X}",
+                detail={"actual": actual, "expected": value, "index": index, "source": source},
+            )
+        )
+
+    def bytes_int_range(
+        self,
+        *,
+        hex_value: str,
+        start: int,
+        length: int,
+        min_value: int | None = None,
+        max_value: int | None = None,
+        endian: Literal["big", "little"] = "big",
+        name: str | None = None,
+        on_fail: Literal["record", "fail", "fatal"] = "fail",
+        message: str | None = None,
+        source: str = "hex_value",
+    ) -> None:
+        data = bytes.fromhex(_normalize_hex(hex_value, field_name=source))
+        end = start + length
+        if end > len(data):
+            self._results.append(
+                _AssertionResult(
+                    ok=False,
+                    on_fail=on_fail,
+                    name=name,
+                    message=message
+                    or f"{source} bytes range out of range: start={start}, length={length}, total={len(data)}",
+                )
+            )
+            return
+
+        actual = int.from_bytes(data[start:end], byteorder=endian)
+        if min_value is not None and actual < min_value:
+            self._results.append(
+                _AssertionResult(
+                    ok=False,
+                    on_fail=on_fail,
+                    name=name,
+                    message=message
+                    or f"{source} value {actual} is smaller than min_value {min_value}",
+                    detail={"actual": actual, "min_value": min_value, "source": source},
+                )
+            )
+            return
+        if max_value is not None and actual > max_value:
+            self._results.append(
+                _AssertionResult(
+                    ok=False,
+                    on_fail=on_fail,
+                    name=name,
+                    message=message
+                    or f"{source} value {actual} is greater than max_value {max_value}",
+                    detail={"actual": actual, "max_value": max_value, "source": source},
+                )
+            )
+
+    def _current_hex(self, key: str) -> str:
+        value = self._context.get(key)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise TypeError(f"hook context field {key} must be str or None")
+        return value
 
 
 class FlowEngine:
@@ -405,7 +596,7 @@ class FlowEngine:
             base_request_hex = request_sequence[0]
             previous_response_hex = run.trace[-1].get("response_hex") if run.trace else None
             if step.before_hook:
-                request_sequence = self._apply_before_hook(
+                request_sequence, hook_assertions = self._apply_before_hook(
                     step.before_hook.script_path,
                     step.before_hook.function_name,
                     step.before_hook.snippet,
@@ -416,14 +607,17 @@ class FlowEngine:
                     flow_dir,
                     flow_path,
                 )
+                self._handle_assertion_results(
+                    run,
+                    step,
+                    hook_assertions,
+                    phase="before_hook",
+                )
 
-            expected_prefix = None
-            if step.expect and step.expect.response_prefix:
-                expected_prefix = step.expect.response_prefix.upper()
             check_each_response = (
                 step.transfer_data is not None
                 and step.transfer_data.check_each_response
-                and expected_prefix is not None
+                and self._has_expect_response_matcher(step.expect)
             )
 
             response_hex = ""
@@ -431,7 +625,7 @@ class FlowEngine:
             for base_index, request_hex in enumerate(request_sequence):
                 per_message_sequence = [request_hex]
                 if step.message_hook:
-                    per_message_sequence = self._apply_message_hook(
+                    per_message_sequence, hook_assertions = self._apply_message_hook(
                         step.message_hook.script_path,
                         step.message_hook.function_name,
                         step.message_hook.snippet,
@@ -444,6 +638,12 @@ class FlowEngine:
                         message_index=base_index,
                         message_total=len(request_sequence),
                         step_name=step.name,
+                    )
+                    self._handle_assertion_results(
+                        run,
+                        step,
+                        hook_assertions,
+                        phase="message_hook",
                     )
 
                 for request_hex in per_message_sequence:
@@ -469,17 +669,39 @@ class FlowEngine:
                     self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
                     previous_response_hex = response_hex
 
-                    if check_each_response and not response_hex.startswith(expected_prefix):
-                        raise ValueError(
-                            "step "
-                            f"{step.name}: transfer_data expect prefix {expected_prefix}, "
-                            f"got {response_hex} at request_index {sent_count}"
+                    if check_each_response and step.expect is not None:
+                        matcher_results = self._evaluate_expect_response_match(
+                            step.expect,
+                            response_hex=response_hex,
+                        )
+                        self._handle_assertion_results(
+                            run,
+                            step,
+                            matcher_results,
+                            phase="expect_response",
+                            request_hex=request_hex,
+                            response_hex=response_hex,
+                        )
+
+                    if step.expect and step.expect.assertions and step.expect.apply_each_response:
+                        assertion_results = self._evaluate_step_assertions(
+                            step.expect.assertions,
+                            request_hex=request_hex,
+                            response_hex=response_hex,
+                        )
+                        self._handle_assertion_results(
+                            run,
+                            step,
+                            assertion_results,
+                            phase="expect",
+                            request_hex=request_hex,
+                            response_hex=response_hex,
                         )
 
                     sent_count += 1
 
             if step.after_hook:
-                response_hex = self._apply_after_hook(
+                response_hex, hook_assertions = self._apply_after_hook(
                     step.after_hook.script_path,
                     step.after_hook.function_name,
                     step.after_hook.snippet,
@@ -490,14 +712,42 @@ class FlowEngine:
                     flow_dir,
                     flow_path,
                 )
+                self._handle_assertion_results(
+                    run,
+                    step,
+                    hook_assertions,
+                    phase="after_hook",
+                    request_hex=request_hex,
+                    response_hex=response_hex,
+                )
 
-            if (
-                expected_prefix is not None
-                and not check_each_response
-                and not response_hex.startswith(expected_prefix)
-            ):
-                raise ValueError(
-                    f"step {step.name}: expect prefix {expected_prefix}, got {response_hex}"
+            if step.expect and step.expect.assertions and not step.expect.apply_each_response:
+                assertion_results = self._evaluate_step_assertions(
+                    step.expect.assertions,
+                    request_hex=request_hex,
+                    response_hex=response_hex,
+                )
+                self._handle_assertion_results(
+                    run,
+                    step,
+                    assertion_results,
+                    phase="expect",
+                    request_hex=request_hex,
+                    response_hex=response_hex,
+                )
+
+            if step.expect is not None and not check_each_response:
+                matcher_results = self._evaluate_expect_response_match(
+                    step.expect,
+                    response_hex=response_hex,
+                )
+                self._handle_assertion_results(
+                    run,
+                    step,
+                    matcher_results,
+                    phase="expect_response",
+                    request_hex=request_hex,
+                    response_hex=response_hex,
                 )
 
             if step.delay_ms > 0:
@@ -523,7 +773,7 @@ class FlowEngine:
         trace: list[dict[str, Any]],
         flow_dir: Path,
         flow_path: Path | None,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[_AssertionResult]]:
         context_variables = dict(variables)
         context = self._build_hook_context(
             request_hex=request_hex,
@@ -533,7 +783,7 @@ class FlowEngine:
             flow_dir=flow_dir,
             flow_path=flow_path,
         )
-        updates = self._run_hook(script_path, function_name, snippet, context)
+        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
 
         sequence = updates.get("request_sequence_hex")
         if sequence is not None:
@@ -549,7 +799,7 @@ class FlowEngine:
             updated_sequence = [updated]
 
         self._apply_variable_updates(variables, context_variables, updates)
-        return updated_sequence
+        return updated_sequence, assertions
 
     def _apply_message_hook(
         self,
@@ -566,7 +816,7 @@ class FlowEngine:
         message_index: int,
         message_total: int,
         step_name: str,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[_AssertionResult]]:
         context_variables = dict(variables)
         context = self._build_hook_context(
             request_hex=request_hex,
@@ -579,7 +829,7 @@ class FlowEngine:
             message_total=message_total,
             step_name=step_name,
         )
-        updates = self._run_hook(script_path, function_name, snippet, context)
+        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
 
         sequence = updates.get("request_sequence_hex")
         if sequence is not None:
@@ -595,7 +845,7 @@ class FlowEngine:
             updated_sequence = [updated]
 
         self._apply_variable_updates(variables, context_variables, updates)
-        return updated_sequence
+        return updated_sequence, assertions
 
     def _apply_after_hook(
         self,
@@ -608,7 +858,7 @@ class FlowEngine:
         trace: list[dict[str, Any]],
         flow_dir: Path,
         flow_path: Path | None,
-    ) -> str:
+    ) -> tuple[str, list[_AssertionResult]]:
         context_variables = dict(variables)
         context = self._build_hook_context(
             request_hex=request_hex,
@@ -618,14 +868,14 @@ class FlowEngine:
             flow_dir=flow_dir,
             flow_path=flow_path,
         )
-        updates = self._run_hook(script_path, function_name, snippet, context)
+        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
 
         updated = updates.get("response_hex", response_hex)
         if not isinstance(updated, str):
             raise TypeError("hook output response_hex must be str")
 
         self._apply_variable_updates(variables, context_variables, updates)
-        return updated
+        return updated, assertions
 
     def _run_hook(
         self,
@@ -633,17 +883,20 @@ class FlowEngine:
         function_name: str | None,
         snippet: str | None,
         context: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], list[_AssertionResult]]:
         updates: dict[str, Any] = {}
+        assertions = _HookAssertions(context)
+        hook_context = dict(context)
+        hook_context["assertions"] = assertions
         if script_path and function_name:
             updates = self._runtime.run_hook(
                 script_path=script_path,
                 function_name=function_name,
-                context=context,
+                context=hook_context,
             )
         elif snippet:
-            updates = self._runtime.run_snippet(code=snippet, context=context)
-        return updates
+            updates = self._runtime.run_snippet(code=snippet, context=hook_context)
+        return updates, assertions.results
 
     def _build_hook_context(
         self,
@@ -776,12 +1029,14 @@ class FlowEngine:
             "block_counter_start": cfg.block_counter_start,
             "request_prefix_hex": cfg.request_prefix_hex,
         }
-        updates = self._run_hook(
+        updates, assertions = self._run_hook(
             hook.script_path,
             hook.function_name,
             hook.snippet,
             context,
         )
+        if assertions:
+            raise ValueError("segments_hook assertions are not supported; use step hooks")
         self._apply_variable_updates(variables, context_variables, updates)
 
         raw_segments = updates.get("segments")
@@ -801,6 +1056,274 @@ class FlowEngine:
         if not segments:
             raise ValueError("segments_hook result.segments must not be empty")
         return segments
+
+    def _evaluate_step_assertions(
+        self,
+        assertions: list[StepAssertion],
+        *,
+        request_hex: str,
+        response_hex: str,
+    ) -> list[_AssertionResult]:
+        results: list[_AssertionResult] = []
+        for assertion in assertions:
+            try:
+                actual_hex = response_hex if assertion.source == "response_hex" else request_hex
+                normalized = _normalize_hex(actual_hex, field_name=assertion.source)
+                data = bytes.fromhex(normalized)
+            except ValueError as exc:
+                results.append(
+                    _AssertionResult(
+                        ok=False,
+                        on_fail=assertion.on_fail,
+                        name=assertion.name,
+                        message=assertion.message or f"invalid hex for assertion source: {exc}",
+                    )
+                )
+                continue
+
+            if assertion.kind == "hex_prefix":
+                prefix = _normalize_hex(
+                    assertion.prefix or "", field_name="assertion.prefix"
+                ).upper()
+                if normalized.upper().startswith(prefix):
+                    continue
+                results.append(
+                    _AssertionResult(
+                        ok=False,
+                        on_fail=assertion.on_fail,
+                        name=assertion.name,
+                        message=assertion.message
+                        or f"expected {assertion.source} to start with {prefix}, got {normalized.upper()}",
+                    )
+                )
+                continue
+
+            if assertion.kind == "hex_equals":
+                expected_hex = _normalize_hex(
+                    assertion.expected_hex or "", field_name="assertion.expected_hex"
+                ).upper()
+                if normalized.upper() == expected_hex:
+                    continue
+                results.append(
+                    _AssertionResult(
+                        ok=False,
+                        on_fail=assertion.on_fail,
+                        name=assertion.name,
+                        message=assertion.message
+                        or f"expected {assertion.source} == {expected_hex}, got {normalized.upper()}",
+                    )
+                )
+                continue
+
+            if assertion.kind == "byte_eq":
+                if assertion.index is None or assertion.value is None:
+                    results.append(
+                        _AssertionResult(
+                            ok=False,
+                            on_fail=assertion.on_fail,
+                            name=assertion.name,
+                            message=assertion.message or "byte_eq requires index and value",
+                        )
+                    )
+                    continue
+                if assertion.index >= len(data):
+                    results.append(
+                        _AssertionResult(
+                            ok=False,
+                            on_fail=assertion.on_fail,
+                            name=assertion.name,
+                            message=assertion.message
+                            or f"byte_eq index out of range: {assertion.index} >= {len(data)}",
+                        )
+                    )
+                    continue
+                actual = data[assertion.index]
+                if actual == assertion.value:
+                    continue
+                results.append(
+                    _AssertionResult(
+                        ok=False,
+                        on_fail=assertion.on_fail,
+                        name=assertion.name,
+                        message=assertion.message
+                        or f"byte_eq failed at index {assertion.index}: expected {assertion.value}, got {actual}",
+                        detail={
+                            "actual": actual,
+                            "expected": assertion.value,
+                            "index": assertion.index,
+                        },
+                    )
+                )
+                continue
+
+            if assertion.kind == "bytes_int_range":
+                if assertion.start is None or assertion.length is None:
+                    results.append(
+                        _AssertionResult(
+                            ok=False,
+                            on_fail=assertion.on_fail,
+                            name=assertion.name,
+                            message=assertion.message
+                            or "bytes_int_range requires start and length",
+                        )
+                    )
+                    continue
+                end = assertion.start + assertion.length
+                if end > len(data):
+                    results.append(
+                        _AssertionResult(
+                            ok=False,
+                            on_fail=assertion.on_fail,
+                            name=assertion.name,
+                            message=assertion.message
+                            or "bytes_int_range slice out of range: "
+                            f"start={assertion.start}, length={assertion.length}, total={len(data)}",
+                        )
+                    )
+                    continue
+                actual = int.from_bytes(data[assertion.start : end], byteorder=assertion.endian)
+                if assertion.min_value is not None and actual < assertion.min_value:
+                    results.append(
+                        _AssertionResult(
+                            ok=False,
+                            on_fail=assertion.on_fail,
+                            name=assertion.name,
+                            message=assertion.message
+                            or f"bytes_int_range actual {actual} < min_value {assertion.min_value}",
+                            detail={"actual": actual, "min_value": assertion.min_value},
+                        )
+                    )
+                    continue
+                if assertion.max_value is not None and actual > assertion.max_value:
+                    results.append(
+                        _AssertionResult(
+                            ok=False,
+                            on_fail=assertion.on_fail,
+                            name=assertion.name,
+                            message=assertion.message
+                            or f"bytes_int_range actual {actual} > max_value {assertion.max_value}",
+                            detail={"actual": actual, "max_value": assertion.max_value},
+                        )
+                    )
+
+        return results
+
+    def _has_expect_response_matcher(self, expect: StepExpect | None) -> bool:
+        if expect is None:
+            return False
+        return any(
+            [
+                expect.response_prefix is not None,
+                expect.response_regex is not None,
+                expect.response_equals is not None,
+            ]
+        )
+
+    def _evaluate_expect_response_match(
+        self,
+        expect: StepExpect,
+        *,
+        response_hex: str,
+    ) -> list[_AssertionResult]:
+        if not self._has_expect_response_matcher(expect):
+            return []
+
+        normalized = _normalize_hex(response_hex, field_name="response_hex").upper()
+
+        if expect.response_prefix is not None:
+            expected = _normalize_hex(
+                expect.response_prefix, field_name="expect.response_prefix"
+            ).upper()
+            if normalized.startswith(expected):
+                return []
+            return [
+                _AssertionResult(
+                    ok=False,
+                    on_fail=expect.response_on_fail,
+                    name="expect.response_prefix",
+                    message=f"expect response_prefix {expected}, got {normalized}",
+                )
+            ]
+
+        if expect.response_equals is not None:
+            expected = _normalize_hex(
+                expect.response_equals, field_name="expect.response_equals"
+            ).upper()
+            if normalized == expected:
+                return []
+            return [
+                _AssertionResult(
+                    ok=False,
+                    on_fail=expect.response_on_fail,
+                    name="expect.response_equals",
+                    message=f"expect response_equals {expected}, got {normalized}",
+                )
+            ]
+
+        if expect.response_regex is not None:
+            pattern = expect.response_regex
+            try:
+                matched = re.fullmatch(pattern, normalized) is not None
+            except re.error as exc:
+                return [
+                    _AssertionResult(
+                        ok=False,
+                        on_fail=expect.response_on_fail,
+                        name="expect.response_regex",
+                        message=f"invalid expect.response_regex pattern: {exc}",
+                    )
+                ]
+            if matched:
+                return []
+            return [
+                _AssertionResult(
+                    ok=False,
+                    on_fail=expect.response_on_fail,
+                    name="expect.response_regex",
+                    message=f"expect response_regex {pattern!r}, got {normalized}",
+                )
+            ]
+
+        return []
+
+    def _handle_assertion_results(
+        self,
+        run: FlowRun,
+        step: FlowStep,
+        results: list[_AssertionResult],
+        *,
+        phase: str,
+        request_hex: str | None = None,
+        response_hex: str | None = None,
+    ) -> None:
+        for result in results:
+            if result.ok:
+                continue
+
+            payload: dict[str, Any] = {
+                "source": "flow_assertion",
+                "flow": run.flow_name,
+                "run_id": run.run_id,
+                "step": step.name,
+                "phase": phase,
+                "name": result.name,
+                "on_fail": result.on_fail,
+                "message": result.message,
+                "request_hex": request_hex,
+                "response_hex": response_hex,
+                "detail": result.detail,
+            }
+            self._event_store.append(LogEvent(kind=EventKind.ERROR, payload=payload))
+
+            if result.on_fail == "record":
+                continue
+            if result.on_fail == "fatal":
+                raise FlowAssertionFatalError(
+                    f"step {step.name} [{phase}] fatal assertion failed: {result.message}"
+                )
+            raise FlowAssertionError(
+                f"step {step.name} [{phase}] assertion failed: {result.message}"
+            )
 
 
 def _readonly_trace(trace: list[dict[str, Any]]) -> tuple[MappingProxyType[str, Any], ...]:

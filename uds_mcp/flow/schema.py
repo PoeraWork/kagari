@@ -14,8 +14,62 @@ class HookConfig(BaseModel):
     snippet: str | None = None
 
 
+class StepAssertion(BaseModel):
+    name: str | None = None
+    kind: Literal["hex_prefix", "hex_equals", "byte_eq", "bytes_int_range"]
+    source: Literal["response_hex", "request_hex"] = "response_hex"
+    on_fail: Literal["record", "fail", "fatal"] = "fail"
+    message: str | None = None
+
+    prefix: str | None = None
+    expected_hex: str | None = None
+    index: int | None = Field(default=None, ge=0)
+    value: int | None = Field(default=None, ge=0, le=0xFF)
+    start: int | None = Field(default=None, ge=0)
+    length: int | None = Field(default=None, ge=1)
+    min_value: int | None = None
+    max_value: int | None = None
+    endian: Literal["big", "little"] = "big"
+
+    @model_validator(mode="after")
+    def _validate_kind_fields(self) -> StepAssertion:
+        if self.kind == "hex_prefix" and self.prefix is None:
+            raise ValueError("assertion kind hex_prefix requires prefix")
+        if self.kind == "hex_equals" and self.expected_hex is None:
+            raise ValueError("assertion kind hex_equals requires expected_hex")
+        if self.kind == "byte_eq" and (self.index is None or self.value is None):
+            raise ValueError("assertion kind byte_eq requires index and value")
+        if self.kind == "bytes_int_range":
+            if self.start is None or self.length is None:
+                raise ValueError("assertion kind bytes_int_range requires start and length")
+            if self.min_value is None and self.max_value is None:
+                raise ValueError("assertion kind bytes_int_range requires min_value or max_value")
+        return self
+
+
 class StepExpect(BaseModel):
     response_prefix: str | None = None
+    response_regex: str | None = None
+    response_equals: str | None = None
+    response_on_fail: Literal["record", "fail", "fatal"] = "fatal"
+    assertions: list[StepAssertion] = Field(default_factory=list)
+    apply_each_response: bool = False
+
+    @model_validator(mode="after")
+    def _validate_response_matchers(self) -> StepExpect:
+        matcher_count = sum(
+            [
+                self.response_prefix is not None,
+                self.response_regex is not None,
+                self.response_equals is not None,
+            ]
+        )
+        if matcher_count > 1:
+            raise ValueError(
+                "expect response matcher requires at most one of "
+                "response_prefix, response_regex, response_equals"
+            )
+        return self
 
 
 class TransferSegment(BaseModel):

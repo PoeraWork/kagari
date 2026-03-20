@@ -255,6 +255,90 @@ Hook context also provides:
 - `variables`: write-back variables for next steps.
 - `response_hex`: optional response override before `expect` checks.
 
+## Assertion Policy (step + hook)
+
+`expect` now supports native `assertions` for stronger checks beyond `response_prefix`.
+`response_prefix` remains fully supported for backward compatibility.
+
+`expect` response matcher now supports one of:
+
+- `response_prefix` (legacy compatible)
+- `response_regex`
+- `response_equals`
+
+Use `response_on_fail` to control behavior when this matcher fails:
+
+- `record`
+- `fail`
+- `fatal` (default)
+
+Supported assertion kinds:
+
+- `hex_prefix`
+- `hex_equals`
+- `byte_eq`
+- `bytes_int_range`
+
+Each assertion supports `on_fail`:
+
+- `record`: only log assertion error event, flow continues.
+- `fail`: fail the flow immediately.
+- `fatal`: fail the flow immediately as a hard-stop assertion.
+
+Example (`byte0 == 0x62`, and `byte1-2` in range):
+
+```yaml
+steps:
+    - name: read_did
+        send: "22ABCD"
+        expect:
+            response_prefix: "62"
+            assertions:
+                - name: sid_ok
+                    kind: byte_eq
+                    source: response_hex
+                    index: 0
+                    value: 0x62
+                    on_fail: fatal
+                - name: did_range
+                    kind: bytes_int_range
+                    source: response_hex
+                    start: 1
+                    length: 2
+                    min_value: 0xAB00
+                    max_value: 0xABFF
+                    on_fail: record
+```
+
+Set `expect.apply_each_response: true` to apply these assertions on each response in multi-request
+steps (for example transfer-data message loops).
+
+Regex response matching example:
+
+```yaml
+steps:
+    - name: read_did
+        send: "22ABCD"
+        expect:
+            response_regex: "^62ABCD[0-9A-F]{2}$"
+            response_on_fail: fatal
+```
+
+Hooks now receive `assertions` helper in context, so you can run multiple checks in one hook:
+
+```python
+assertions.response_byte_eq(0, 0x62, name="sid_ok", on_fail="fatal")
+assertions.response_bytes_int_range(
+    1,
+    2,
+    min_value=0xAB00,
+    max_value=0xABFF,
+    name="did_range",
+    on_fail="record",
+)
+result = {}
+```
+
 ## UDS Addressing And TesterPresent
 
 - `uds_send` supports `addressing_mode`: `physical` (default) or `functional`.

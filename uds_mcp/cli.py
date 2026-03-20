@@ -68,7 +68,9 @@ def config_show(config_path: Path | None) -> None:
 @click.argument("arbitration_id")
 @click.argument("data_hex")
 @click.option("--extended", is_flag=True, default=False, help="Use extended CAN ID.")
-def can_send(config_path: Path | None, arbitration_id: str, data_hex: str, *, extended: bool) -> None:
+def can_send(
+    config_path: Path | None, arbitration_id: str, data_hex: str, *, extended: bool
+) -> None:
     config, _ = _load_and_prepare_config(config_path)
     app = _CliRuntime(config)
     try:
@@ -92,7 +94,9 @@ def can_send(config_path: Path | None, arbitration_id: str, data_hex: str, *, ex
     help=_CONFIG_HELP,
 )
 @click.argument("request_hex")
-@click.option("--timeout-ms", type=int, default=1000, show_default=True, help="Timeout in milliseconds.")
+@click.option(
+    "--timeout-ms", type=int, default=1000, show_default=True, help="Timeout in milliseconds."
+)
 @click.option(
     "--addressing-mode",
     type=click.Choice(["physical", "functional"], case_sensitive=True),
@@ -133,7 +137,9 @@ def uds_send(
 )
 @click.argument("path", type=click.Path(path_type=Path, dir_okay=False, exists=True))
 @click.option("--no-wait", is_flag=True, default=False, help="Return immediately after start.")
-@click.option("--timeout-s", type=float, default=0.0, show_default=True, help="Optional timeout seconds.")
+@click.option(
+    "--timeout-s", type=float, default=0.0, show_default=True, help="Optional timeout seconds."
+)
 @click.option(
     "--blf-output",
     type=click.Path(path_type=Path, dir_okay=False),
@@ -205,14 +211,22 @@ def flow_run(
 )
 @click.argument("trailing_specs", nargs=-1)
 @click.option("--suite-name", type=str, default=None, help="Override suite name in report.")
-@click.option("--timeout-s", type=float, default=0.0, show_default=True, help="Per-flow timeout seconds.")
+@click.option(
+    "--timeout-s", type=float, default=0.0, show_default=True, help="Per-flow timeout seconds."
+)
 @click.option(
     "--stop-on-fail",
     is_flag=True,
     default=False,
     help="Stop suite execution immediately when one flow fails.",
 )
-@click.option("--report-json", type=click.Path(path_type=Path, dir_okay=False), default=Path("./flow-report.json"), show_default=True, help="Output JSON report path.")
+@click.option(
+    "--report-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("./flow-report.json"),
+    show_default=True,
+    help="Output JSON report path.",
+)
 @click.option(
     "--report-html",
     type=click.Path(path_type=Path, dir_okay=False),
@@ -653,7 +667,9 @@ def _derive_case_diagnostics(status: dict[str, Any]) -> dict[str, Any]:
     if state == "DONE":
         failure_reason = None
     elif expected_prefix is not None and actual_prefix is not None:
-        failure_reason = f"response prefix mismatch: expected {expected_prefix}, got {actual_prefix}"
+        failure_reason = (
+            f"response prefix mismatch: expected {expected_prefix}, got {actual_prefix}"
+        )
     elif state == "TIMEOUT":
         failure_reason = error or "flow timeout"
     else:
