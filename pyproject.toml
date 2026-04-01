@@ -3,7 +3,7 @@ name = "uds-mcp"
 version = "0.1.0"
 description = "UDS MCP server based on py-uds and python-can"
 readme = "README.md"
-requires-python = ">=3.11, <4.0"
+requires-python = ">=3.13, <4.0"
 dependencies = [
     "mcp[cli]>=1.26.0",
     "python-can>=4.6.1",
@@ -14,7 +14,13 @@ dependencies = [
     "bincopy>=20.1.1",
     "pyserial>=3.5",
     "click>=8.3.1",
+    "pyvbf",
+    "pycbf"
 ]
+
+[tool.uv.sources]
+pyvbf = { git = "ssh://git@gitlab.jiefengrong.com/Poera/pyvbf.git", rev = "main" }
+pycbf = { git = "ssh://git@gitlab.jiefengrong.com/Poera/pycbf.git", rev = "dev" }
 
 [dependency-groups]
 dev = [
