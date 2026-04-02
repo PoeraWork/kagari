@@ -32,11 +32,10 @@ class ExtensionRuntime:
         if not self._is_allowed(target):
             raise PermissionError(f"script path not in whitelist: {target}")
 
-        globals_dict: dict[str, Any] = {"__name__": "__hook__"}
-        locals_dict: dict[str, Any] = {}
+        namespace: dict[str, Any] = {"__name__": "__hook__"}
         code = target.read_text(encoding="utf-8")
-        exec(compile(code, str(target), "exec"), globals_dict, locals_dict)  # noqa: S102
-        fn = _get_callable(locals_dict, function_name)
+        exec(compile(code, str(target), "exec"), namespace, namespace)  # noqa: S102
+        fn = _get_callable(namespace, function_name)
         result = fn(MappingProxyType(context))
         if result is None:
             return {}
@@ -45,14 +44,14 @@ class ExtensionRuntime:
         return result
 
     def run_snippet(self, *, code: str, context: dict[str, Any]) -> dict[str, Any]:
-        globals_dict: dict[str, Any] = {"__name__": "__hook__"}
-        locals_dict: dict[str, Any] = {
+        namespace: dict[str, Any] = {
+            "__name__": "__hook__",
             "context": context,
             "assertions": context.get("assertions"),
             "result": {},
         }
-        exec(code, globals_dict, locals_dict)  # noqa: S102
-        result = locals_dict.get("result", {})
+        exec(code, namespace, namespace)  # noqa: S102
+        result = namespace.get("result", {})
         if not isinstance(result, dict):
             raise TypeError("snippet must set dict variable: result")
         return result
