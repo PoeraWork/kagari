@@ -412,3 +412,41 @@ def test_send_no_response_logs_tx_without_rx(monkeypatch) -> None:
         service.close()
 
     asyncio.run(_run())
+
+
+def test_send_can_frames_batch(monkeypatch) -> None:
+    async def _run() -> None:
+        import uds_mcp.uds.client as uds_client_module
+
+        monkeypatch.setattr(uds_client_module, "PyCanTransportInterface", _FakeTransport)
+        monkeypatch.setattr(uds_client_module, "Client", _FakeClient)
+
+        can_if = _FakeCanInterface()
+        service = UdsClientService(
+            can_if,
+            UdsConfig(
+                tx_id=0x70D,
+                rx_id=0x78D,
+                tx_functional_id=0x7DF,
+                rx_functional_id=0x7E8,
+                tester_present_interval_sec=0.1,
+            ),
+            EventStore(),
+        )
+
+        result = await service.send_can_frames(
+            [
+                {"arbitration_id": 0x700, "data_hex": "0102"},
+                {"arbitration_id": 0x701, "data_hex": "AABB", "is_extended_id": True},
+            ]
+        )
+
+        assert result == {"sent": 2}
+        assert can_if.sent_frames == [
+            (0x700, bytes.fromhex("0102"), False),
+            (0x701, bytes.fromhex("AABB"), True),
+        ]
+
+        service.close()
+
+    asyncio.run(_run())

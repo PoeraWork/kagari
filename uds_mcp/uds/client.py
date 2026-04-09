@@ -114,6 +114,9 @@ class UdsClientService:
         payload = bytes.fromhex(request_hex)
         return await asyncio.to_thread(self._send_no_response_sync, payload, addressing_mode)
 
+    async def send_can_frames(self, frames: list[dict[str, object]]) -> dict[str, object]:
+        return await asyncio.to_thread(self._send_can_frames_sync, frames)
+
     async def ensure_tester_present(self) -> None:
         await self.start_tester_present_owner("flow-breakpoint", addressing_mode="physical")
 
@@ -219,6 +222,32 @@ class UdsClientService:
             "response_id": None,
             "addressing_mode": addressing_mode,
         }
+
+    def _send_can_frames_sync(self, frames: list[dict[str, object]]) -> dict[str, object]:
+        sent = 0
+        with self._client_lock:
+            for frame in frames:
+                raw_arbitration_id = frame.get("arbitration_id")
+                raw_data_hex = frame.get("data_hex")
+                raw_is_extended_id = frame.get("is_extended_id", False)
+
+                if not isinstance(raw_arbitration_id, int):
+                    raise TypeError("send_can_frames requires int arbitration_id")
+                if not isinstance(raw_data_hex, str):
+                    raise TypeError("send_can_frames requires str data_hex")
+                if not isinstance(raw_is_extended_id, bool):
+                    raise TypeError("send_can_frames requires bool is_extended_id")
+
+                arbitration_id = raw_arbitration_id
+                data_hex = raw_data_hex
+                is_extended_id = raw_is_extended_id
+                self._can.send_frame(
+                    arbitration_id,
+                    bytes.fromhex(data_hex),
+                    is_extended_id=is_extended_id,
+                )
+                sent += 1
+        return {"sent": sent}
 
     def _log_uds_exchange(
         self,

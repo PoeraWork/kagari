@@ -72,6 +72,13 @@ class _RequestDispatchItem:
     skipped_response: bool = False
 
 
+@dataclass(slots=True)
+class _CanFrameDispatchItem:
+    arbitration_id: int
+    data_hex: str
+    is_extended_id: bool = False
+
+
 class _HookAssertions:
     def __init__(self, context: dict[str, Any]) -> None:
         self._context = context
@@ -665,6 +672,7 @@ class FlowEngine:
                 for dispatch_item in per_message_items:
                     request_hex = dispatch_item.request_hex
                     skipped_response = dispatch_item.skipped_response
+                    hook_message_total = len(request_items)
                     if skipped_response:
                         await self._uds_client.send_no_response(
                             request_hex,
@@ -696,6 +704,43 @@ class FlowEngine:
                     }
                     run.trace.append(item)
                     self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+
+                    if step.can_tx_hook:
+                        can_frames, hook_assertions = self._apply_can_tx_hook(
+                            step.can_tx_hook.script_path,
+                            step.can_tx_hook.function_name,
+                            step.can_tx_hook.snippet,
+                            request_hex,
+                            response_hex,
+                            variables,
+                            run.trace,
+                            flow_dir,
+                            flow_path,
+                            message_index=base_index,
+                            message_total=hook_message_total,
+                            step_name=step.name,
+                            skipped_response=skipped_response,
+                            addressing_mode=addressing_mode,
+                        )
+                        self._handle_assertion_results(
+                            run,
+                            step,
+                            hook_assertions,
+                            phase="can_tx_hook",
+                            request_hex=request_hex,
+                            response_hex=response_hex,
+                        )
+                        if can_frames:
+                            await self._uds_client.send_can_frames(
+                                [
+                                    {
+                                        "arbitration_id": frame.arbitration_id,
+                                        "data_hex": frame.data_hex,
+                                        "is_extended_id": frame.is_extended_id,
+                                    }
+                                    for frame in can_frames
+                                ]
+                            )
 
                     if check_each_response and step.expect is not None:
                         matcher_results = self._evaluate_expect_response_match(
@@ -896,6 +941,78 @@ class FlowEngine:
         self._apply_variable_updates(variables, context_variables, updates)
         return updated, assertions
 
+    def _apply_can_tx_hook(
+        self,
+        script_path: str | None,
+        function_name: str | None,
+        snippet: str | None,
+        request_hex: str,
+        response_hex: str | None,
+        variables: dict[str, Any],
+        trace: list[dict[str, Any]],
+        flow_dir: Path,
+        flow_path: Path | None,
+        *,
+        message_index: int,
+        message_total: int,
+        step_name: str,
+        skipped_response: bool,
+        addressing_mode: Literal["physical", "functional"],
+    ) -> tuple[list[_CanFrameDispatchItem], list[_AssertionResult]]:
+        context_variables = dict(variables)
+        context = self._build_hook_context(
+            request_hex=request_hex,
+            response_hex=response_hex,
+            variables=context_variables,
+            trace=trace,
+            flow_dir=flow_dir,
+            flow_path=flow_path,
+            message_index=message_index,
+            message_total=message_total,
+            step_name=step_name,
+            skipped_response=skipped_response,
+            addressing_mode=addressing_mode,
+        )
+        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
+        self._apply_variable_updates(variables, context_variables, updates)
+        return self._resolve_can_frame_dispatch_items(updates), assertions
+
+    def _resolve_can_frame_dispatch_items(
+        self,
+        updates: dict[str, Any],
+    ) -> list[_CanFrameDispatchItem]:
+        raw_frames = updates.get("can_frames")
+        if raw_frames is None:
+            return []
+        if not isinstance(raw_frames, list):
+            raise TypeError("hook output can_frames must be list[dict]")
+
+        frames: list[_CanFrameDispatchItem] = []
+        for item in raw_frames:
+            if not isinstance(item, dict):
+                raise TypeError("hook output can_frames must be list[dict]")
+
+            arbitration_id = item.get("arbitration_id")
+            data_hex = item.get("data_hex")
+            is_extended_id = item.get("is_extended_id", False)
+
+            if not isinstance(arbitration_id, int):
+                raise TypeError("hook output can_frames[].arbitration_id must be int")
+            if not isinstance(data_hex, str):
+                raise TypeError("hook output can_frames[].data_hex must be str")
+            if not isinstance(is_extended_id, bool):
+                raise TypeError("hook output can_frames[].is_extended_id must be bool")
+
+            normalized_hex = _normalize_hex(data_hex, field_name="can_frames[].data_hex").upper()
+            frames.append(
+                _CanFrameDispatchItem(
+                    arbitration_id=arbitration_id,
+                    data_hex=normalized_hex,
+                    is_extended_id=is_extended_id,
+                )
+            )
+        return frames
+
     def _resolve_request_dispatch_items(
         self,
         updates: dict[str, Any],
@@ -982,6 +1099,8 @@ class FlowEngine:
         message_index: int | None = None,
         message_total: int | None = None,
         step_name: str | None = None,
+        skipped_response: bool | None = None,
+        addressing_mode: Literal["physical", "functional"] | None = None,
     ) -> dict[str, Any]:
         context: dict[str, Any] = {
             "request_hex": request_hex,
@@ -997,6 +1116,10 @@ class FlowEngine:
             context["message_total"] = message_total
         if step_name is not None:
             context["step_name"] = step_name
+        if skipped_response is not None:
+            context["skipped_response"] = skipped_response
+        if addressing_mode is not None:
+            context["addressing_mode"] = addressing_mode
         return context
 
     def _apply_variable_updates(

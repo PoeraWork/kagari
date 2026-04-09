@@ -115,6 +115,7 @@ class FlowStep(BaseModel):
     transfer_data: TransferDataConfig | None = None
     before_hook: HookConfig | None = None
     message_hook: HookConfig | None = None
+    can_tx_hook: HookConfig | None = None
     after_hook: HookConfig | None = None
 
     @model_validator(mode="after")
@@ -132,6 +133,8 @@ class FlowStep(BaseModel):
                 raise ValueError("sub_flow step must not set before_hook")
             if self.message_hook is not None:
                 raise ValueError("sub_flow step must not set message_hook")
+            if self.can_tx_hook is not None:
+                raise ValueError("sub_flow step must not set can_tx_hook")
             if self.after_hook is not None:
                 raise ValueError("sub_flow step must not set after_hook")
             if self.expect is not None:
@@ -156,6 +159,7 @@ def load_flow_yaml(path: Path) -> FlowDefinition:
         _resolve_sub_flow_path(step, base_dir)
         _resolve_hook_script_path(step.before_hook, base_dir)
         _resolve_hook_script_path(step.message_hook, base_dir)
+        _resolve_hook_script_path(step.can_tx_hook, base_dir)
         _resolve_hook_script_path(step.after_hook, base_dir)
         if step.transfer_data is not None:
             _resolve_hook_script_path(step.transfer_data.segments_hook, base_dir)

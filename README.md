@@ -248,6 +248,24 @@ steps:
 `message_hook` context includes `message_index`, `message_total`, `step_name`, `request_hex`,
 `response_hex`, `variables`, and read-only `trace`.
 
+`can_tx_hook` runs for each dispatched request and can send extra raw CAN bursts.
+
+- If `skipped_response=true`, `can_tx_hook` runs immediately after sending that request.
+- If `skipped_response=false`, it runs after response reception for that request.
+
+`can_tx_hook` context includes `message_index`, `message_total`, `step_name`, `request_hex`,
+`response_hex`, `skipped_response`, `addressing_mode`, `variables`, and read-only `trace`.
+
+`can_tx_hook` output supports:
+
+```python
+result = {
+    "can_frames": [
+        {"arbitration_id": 0x7D1, "data_hex": "11223344", "is_extended_id": False}
+    ]
+}
+```
+
 Each step also supports `skipped_response` (default `false`). When enabled for a sent request,
 the engine transmits it without waiting for a UDS response (fire-and-continue).
 

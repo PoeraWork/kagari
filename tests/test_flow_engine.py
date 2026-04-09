@@ -16,12 +16,15 @@ class _FakeUdsClient:
     def __init__(self) -> None:
         self.tp_events: list[tuple[str, str]] = []
         self.no_response_requests: list[str] = []
+        self.sent_can_frames: list[dict[str, object]] = []
+        self.call_log: list[tuple[str, str]] = []
 
     async def send(
         self, request_hex: str, timeout_ms: int = 1000, *, addressing_mode: str = "physical"
     ) -> dict[str, object]:
         del timeout_ms, addressing_mode
         request_hex = request_hex.upper()
+        self.call_log.append(("send", request_hex))
         if request_hex == "2711":
             response_hex = "6711ABCD"
         elif request_hex == "2712ABCD":
@@ -47,12 +50,18 @@ class _FakeUdsClient:
     ) -> dict[str, object]:
         del addressing_mode
         request_hex = request_hex.upper()
+        self.call_log.append(("send_no_response", request_hex))
         self.no_response_requests.append(request_hex)
         return {
             "request_hex": request_hex,
             "response_hex": None,
             "response_id": None,
         }
+
+    async def send_can_frames(self, frames: list[dict[str, object]]) -> dict[str, object]:
+        self.call_log.append(("send_can_frames", str(len(frames))))
+        self.sent_can_frames.extend(frames)
+        return {"sent": len(frames)}
 
     async def ensure_tester_present(self) -> None:
         return None
@@ -704,6 +713,64 @@ def test_transfer_data_message_hook_request_items_can_skip_per_message_response(
         assert trace[1]["response_hex"] is None
         assert trace[1]["skipped_response"] is True
         assert uds.no_response_requests == ["3602BB"]
+
+    asyncio.run(_run())
+
+
+def test_can_tx_hook_sends_frames_for_each_message_with_skip_aware_timing() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="can_tx_hook_per_message",
+            steps=[
+                {
+                    "name": "transfer_payload",
+                    "transfer_data": {
+                        "segments": [{"address": 0x1000, "data_hex": "AABB"}],
+                        "chunk_size": 1,
+                        "block_counter_start": 1,
+                        "check_each_response": False,
+                    },
+                    "message_hook": {
+                        "snippet": (
+                            'if context["message_index"] == 1:\n'
+                            '    result = {"request_items": [{"request_hex": context["request_hex"], "skipped_response": True}]}\n'
+                            "else:\n"
+                            "    result = {}\n"
+                        )
+                    },
+                    "can_tx_hook": {
+                        "snippet": (
+                            'if context["skipped_response"]:\n'
+                            '    result = {"can_frames": [{"arbitration_id": 0x701, "data_hex": "ABCD"}]}\n'
+                            "else:\n"
+                            '    result = {"can_frames": [{"arbitration_id": 0x700, "data_hex": "1234"}]}\n'
+                        )
+                    },
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert uds.no_response_requests == ["3602BB"]
+        assert uds.sent_can_frames == [
+            {"arbitration_id": 0x700, "data_hex": "1234", "is_extended_id": False},
+            {"arbitration_id": 0x701, "data_hex": "ABCD", "is_extended_id": False},
+        ]
+
+        assert uds.call_log == [
+            ("send", "3601AA"),
+            ("send_can_frames", "1"),
+            ("send_no_response", "3602BB"),
+            ("send_can_frames", "1"),
+        ]
 
     asyncio.run(_run())
 

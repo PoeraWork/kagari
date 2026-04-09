@@ -175,12 +175,13 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             "UDS MCP server backed by py-uds and python-can. "
             "Supports CAN/UDS send, flow orchestration, breakpoints, injection, and BLF export. "
             "Flow hooks: before_hook (request shaping), message_hook (per UDS message), "
-            "after_hook (response/variables updates). "
+            "can_tx_hook (send raw CAN burst), after_hook (response/variables updates). "
             "Hook context includes request_hex/response_hex/variables/read-only trace, and for "
-            "message_hook also message_index/message_total/step_name. "
+            "message_hook/can_tx_hook also message_index/message_total/step_name/skipped_response. "
             "Hook outputs can include request_hex, request_sequence_hex(list[str]), "
             "request_items(list[{request_hex, skipped_response}]), response_hex, "
-            "variables, and transfer segments from segments_hook. "
+            "variables, can_frames(list[{arbitration_id,data_hex,is_extended_id?}]), "
+            "and transfer segments from segments_hook. "
             "transfer_data uses standardized segments(address+data_hex) with optional "
             "segments_hook for dynamic generation, and check_each_response for per-block "
             "expect checking policy. Hook runtime uses full Python "
@@ -350,6 +351,23 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                         "variables",
                     ],
                 },
+                "can_tx_hook": {
+                    "purpose": "send raw CAN frames after each dispatched request",
+                    "context": [
+                        "request_hex",
+                        "response_hex",
+                        "variables",
+                        "trace",
+                        "message_index",
+                        "message_total",
+                        "step_name",
+                        "skipped_response",
+                        "addressing_mode",
+                        "flow_dir",
+                        "flow_path",
+                    ],
+                    "outputs": ["can_frames", "variables"],
+                },
                 "after_hook": {
                     "purpose": "modify final response / update variables after send",
                     "context": [
@@ -400,6 +418,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                 "repeat": "int>=1 - number of times to repeat this step (default 1)",
                 "addressing_mode": "physical|functional|inherit - UDS addressing mode (default inherit from flow)",
                 "skipped_response": "bool - send request without waiting UDS response (default false)",
+                "can_tx_hook": "HookConfig|None - send extra raw CAN frames per dispatched request",
             },
             "flow_fields": {
                 "default_addressing_mode": "physical|functional - default addressing mode for steps with inherit (default physical)",

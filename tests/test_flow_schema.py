@@ -191,6 +191,22 @@ def test_step_supports_skipped_response_flag() -> None:
     assert flow.steps[0].skipped_response is True
 
 
+def test_step_supports_can_tx_hook() -> None:
+    flow = FlowDefinition(
+        name="can_tx_hook_flag",
+        steps=[
+            {
+                "name": "transfer_block",
+                "send": "3601AA",
+                "can_tx_hook": {
+                    "snippet": 'result = {"can_frames": [{"arbitration_id": 0x700, "data_hex": "01"}]}'
+                },
+            }
+        ],
+    )
+    assert flow.steps[0].can_tx_hook is not None
+
+
 # ---------------------------------------------------------------------------
 # Task 1.6 – Unit tests for schema 变更
 # Requirements: 1.1, 1.2, 1.5, 3.1, 3.7, 9.1, 9.2, 9.7
@@ -285,7 +301,7 @@ class TestMutualExclusivity:
 
 
 class TestSubFlowHookRestrictions:
-    """sub_flow step must not have before_hook, message_hook, after_hook, expect."""
+    """sub_flow step must not have hooks or expect."""
 
     _sf = "/flows/c.yaml"
 
@@ -324,6 +340,21 @@ class TestSubFlowHookRestrictions:
                         "name": "s",
                         "sub_flow": self._sf,
                         "after_hook": {"snippet": "pass"},
+                    }
+                ],
+            )
+
+    def test_sub_flow_with_can_tx_hook_rejected(self) -> None:
+        with pytest.raises(ValueError, match="can_tx_hook"):
+            FlowDefinition(
+                name="bad",
+                steps=[
+                    {
+                        "name": "s",
+                        "sub_flow": self._sf,
+                        "can_tx_hook": {
+                            "snippet": 'result = {"can_frames": [{"arbitration_id": 0x700, "data_hex": "01"}]}'
+                        },
                     }
                 ],
             )
