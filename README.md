@@ -192,6 +192,19 @@ req = context["request_hex"]
 result = {"request_sequence_hex": [req, req]}
 ```
 
+Hooks can also return `request_items` for per-request dispatch controls:
+
+```python
+result = {
+    "request_items": [
+        {"request_hex": "3601AA", "skipped_response": False},
+        {"request_hex": "3602BB", "skipped_response": True},
+    ]
+}
+```
+
+`request_items` takes priority over `request_sequence_hex`, which takes priority over `request_hex`.
+
 For built-in `0x36` TransferData, use standardized `segments` (address + data_hex).
 OEM-specific file parsing should be done by external trusted tools, then flow consumes normalized segments.
 
@@ -234,6 +247,9 @@ steps:
 
 `message_hook` context includes `message_index`, `message_total`, `step_name`, `request_hex`,
 `response_hex`, `variables`, and read-only `trace`.
+
+Each step also supports `skipped_response` (default `false`). When enabled for a sent request,
+the engine transmits it without waiting for a UDS response (fire-and-continue).
 
 `transfer_data.check_each_response` defaults to `true`:
 

@@ -6,6 +6,7 @@ from threading import Event, Thread
 from uds.addressing import AddressingType
 
 from uds_mcp.logging.store import EventStore
+from uds_mcp.models.events import EventKind
 from uds_mcp.uds.client import UdsClientService, UdsConfig
 
 
@@ -42,6 +43,12 @@ class _FakeClient:
 
     def send_request_receive_responses(self, request: object) -> tuple[object, tuple[object, ...]]:
         raise RuntimeError("not used in this test")
+
+    def _send_request(self, request: object) -> object:
+        payload = getattr(request, "payload")
+        addressing_type = getattr(request, "addressing_type", AddressingType.PHYSICAL)
+        can_id = 0x70D if addressing_type == AddressingType.PHYSICAL else 0x7DF
+        return _FakeUdsMessageRecord(payload, can_id=can_id)
 
     @property
     def is_tester_present_sent(self) -> bool:
@@ -364,6 +371,43 @@ def test_send_restores_p3_after_temporary_timeout_override(monkeypatch) -> None:
         # Critical regression check: temporary timeout must not permanently enlarge P3.
         assert client.p3_client_physical == 100.0
         assert client.p3_client_functional == 100.0
+
+        service.close()
+
+    asyncio.run(_run())
+
+
+def test_send_no_response_logs_tx_without_rx(monkeypatch) -> None:
+    async def _run() -> None:
+        import uds_mcp.uds.client as uds_client_module
+
+        monkeypatch.setattr(uds_client_module, "PyCanTransportInterface", _FakeTransport)
+        monkeypatch.setattr(uds_client_module, "Client", _FakeClient)
+
+        can_if = _FakeCanInterface()
+        store = EventStore()
+        service = UdsClientService(
+            can_if,
+            UdsConfig(
+                tx_id=0x70D,
+                rx_id=0x78D,
+                tx_functional_id=0x7DF,
+                rx_functional_id=0x7E8,
+                tester_present_interval_sec=0.1,
+            ),
+            store,
+        )
+
+        result = await service.send_no_response("3601AA")
+
+        assert result["request_hex"] == "3601AA"
+        assert result["response_hex"] is None
+        assert result["response_id"] is None
+
+        tx_events = store.query(kinds=[EventKind.UDS_TX])
+        rx_events = store.query(kinds=[EventKind.UDS_RX])
+        assert len(tx_events) == 1
+        assert len(rx_events) == 0
 
         service.close()
 

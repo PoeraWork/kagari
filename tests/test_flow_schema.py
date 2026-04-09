@@ -177,6 +177,20 @@ def test_step_expect_response_matchers_are_mutually_exclusive() -> None:
         )
 
 
+def test_step_supports_skipped_response_flag() -> None:
+    flow = FlowDefinition(
+        name="skip_resp_flag",
+        steps=[
+            {
+                "name": "transfer_block",
+                "send": "3601AA",
+                "skipped_response": True,
+            }
+        ],
+    )
+    assert flow.steps[0].skipped_response is True
+
+
 # ---------------------------------------------------------------------------
 # Task 1.6 – Unit tests for schema 变更
 # Requirements: 1.1, 1.2, 1.5, 3.1, 3.7, 9.1, 9.2, 9.7

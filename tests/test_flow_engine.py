@@ -15,6 +15,7 @@ from uds_mcp.models.events import EventKind
 class _FakeUdsClient:
     def __init__(self) -> None:
         self.tp_events: list[tuple[str, str]] = []
+        self.no_response_requests: list[str] = []
 
     async def send(
         self, request_hex: str, timeout_ms: int = 1000, *, addressing_mode: str = "physical"
@@ -25,6 +26,8 @@ class _FakeUdsClient:
             response_hex = "6711ABCD"
         elif request_hex == "2712ABCD":
             response_hex = "6712"
+        elif request_hex == "37":
+            response_hex = "77"
         elif request_hex == "22ABCD":
             response_hex = "62ABCD00"
         elif request_hex.endswith("BAD0"):
@@ -37,6 +40,18 @@ class _FakeUdsClient:
             "request_hex": request_hex,
             "response_hex": response_hex,
             "response_id": 0x7E8,
+        }
+
+    async def send_no_response(
+        self, request_hex: str, *, addressing_mode: str = "physical"
+    ) -> dict[str, object]:
+        del addressing_mode
+        request_hex = request_hex.upper()
+        self.no_response_requests.append(request_hex)
+        return {
+            "request_hex": request_hex,
+            "response_hex": None,
+            "response_id": None,
         }
 
     async def ensure_tester_present(self) -> None:
@@ -640,6 +655,55 @@ def test_transfer_data_can_disable_per_message_check_for_negative_hook_logic() -
         trace = engine.get_trace(run_id)
         requests = [item["request_hex"] for item in trace]
         assert requests == ["3601AA", "3602BAD0", "3603CC"]
+
+    asyncio.run(_run())
+
+
+def test_transfer_data_message_hook_request_items_can_skip_per_message_response() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="transfer_data_skip_single_block_response",
+            steps=[
+                {
+                    "name": "transfer_payload",
+                    "transfer_data": {
+                        "segments": [{"address": 0x1000, "data_hex": "AABB"}],
+                        "chunk_size": 1,
+                        "block_counter_start": 1,
+                        "check_each_response": False,
+                    },
+                    "message_hook": {
+                        "snippet": (
+                            'if context["message_index"] == 1:\n'
+                            '    result = {"request_items": [{"request_hex": context["request_hex"], "skipped_response": True}]}\n'
+                            "else:\n"
+                            "    result = {}\n"
+                        )
+                    },
+                },
+                {
+                    "name": "transfer_exit",
+                    "send": "37",
+                    "expect": {"response_prefix": "77"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        trace = engine.get_trace(run_id)
+        assert [item["request_hex"] for item in trace] == ["3601AA", "3602BB", "37"]
+        assert trace[0]["response_hex"] == "7601AA"
+        assert trace[1]["response_hex"] is None
+        assert trace[1]["skipped_response"] is True
+        assert uds.no_response_requests == ["3602BB"]
 
     asyncio.run(_run())
 

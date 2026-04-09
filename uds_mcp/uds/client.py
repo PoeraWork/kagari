@@ -105,6 +105,15 @@ class UdsClientService:
         payload = bytes.fromhex(request_hex)
         return await asyncio.to_thread(self._send_sync, payload, timeout_ms, addressing_mode)
 
+    async def send_no_response(
+        self,
+        request_hex: str,
+        *,
+        addressing_mode: Literal["physical", "functional"] = "physical",
+    ) -> dict[str, object]:
+        payload = bytes.fromhex(request_hex)
+        return await asyncio.to_thread(self._send_no_response_sync, payload, addressing_mode)
+
     async def ensure_tester_present(self) -> None:
         await self.start_tester_present_owner("flow-breakpoint", addressing_mode="physical")
 
@@ -197,32 +206,26 @@ class UdsClientService:
             "addressing_mode": addressing_mode,
         }
 
+    def _send_no_response_sync(self, payload: bytes, addressing_mode: str) -> dict[str, object]:
+        addressing_type = _parse_addressing_mode(addressing_mode)
+        with self._client_lock:
+            request = UdsMessage(payload=payload, addressing_type=addressing_type)
+            request_record = self._client._send_request(request)
+
+        self._log_uds_request(request_record)
+        return {
+            "request_hex": payload.hex().upper(),
+            "response_hex": None,
+            "response_id": None,
+            "addressing_mode": addressing_mode,
+        }
+
     def _log_uds_exchange(
         self,
         request_record: UdsMessageRecord,
         response_records: tuple[UdsMessageRecord, ...],
     ) -> None:
-        self._event_store.append(
-            LogEvent(
-                kind=EventKind.UDS_TX,
-                payload={
-                    "request_hex": request_record.payload.hex().upper(),
-                    "tx_id": int(request_record.packets_records[-1].can_id),
-                },
-            )
-        )
-        for packet in request_record.packets_records:
-            self._event_store.append(
-                LogEvent(
-                    kind=EventKind.CAN_TX,
-                    payload={
-                        "channel": str(packet.frame.channel),
-                        "arbitration_id": int(packet.can_id),
-                        "is_extended_id": bool(packet.frame.is_extended_id),
-                        "data_hex": packet.raw_frame_data.hex().upper(),
-                    },
-                )
-            )
+        self._log_uds_request(request_record)
 
         for response in response_records:
             self._event_store.append(
@@ -246,6 +249,29 @@ class UdsClientService:
                         },
                     )
                 )
+
+    def _log_uds_request(self, request_record: UdsMessageRecord) -> None:
+        self._event_store.append(
+            LogEvent(
+                kind=EventKind.UDS_TX,
+                payload={
+                    "request_hex": request_record.payload.hex().upper(),
+                    "tx_id": int(request_record.packets_records[-1].can_id),
+                },
+            )
+        )
+        for packet in request_record.packets_records:
+            self._event_store.append(
+                LogEvent(
+                    kind=EventKind.CAN_TX,
+                    payload={
+                        "channel": str(packet.frame.channel),
+                        "arbitration_id": int(packet.can_id),
+                        "is_extended_id": bool(packet.frame.is_extended_id),
+                        "data_hex": packet.raw_frame_data.hex().upper(),
+                    },
+                )
+            )
 
     def _acquire_tester_present_sync(self, owner: str, addressing_mode: str) -> dict[str, object]:
         requested = _parse_addressing_mode(addressing_mode)

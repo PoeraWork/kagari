@@ -66,6 +66,12 @@ class _AssertionResult:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class _RequestDispatchItem:
+    request_hex: str
+    skipped_response: bool = False
+
+
 class _HookAssertions:
     def __init__(self, context: dict[str, Any]) -> None:
         self._context = context
@@ -593,10 +599,17 @@ class FlowEngine:
                 flow_dir,
                 flow_path,
             )
-            base_request_hex = request_sequence[0]
+            request_items = [
+                _RequestDispatchItem(
+                    request_hex=request_hex,
+                    skipped_response=step.skipped_response,
+                )
+                for request_hex in request_sequence
+            ]
+            base_request_hex = request_items[0].request_hex
             previous_response_hex = run.trace[-1].get("response_hex") if run.trace else None
             if step.before_hook:
-                request_sequence, hook_assertions = self._apply_before_hook(
+                request_items, hook_assertions = self._apply_before_hook(
                     step.before_hook.script_path,
                     step.before_hook.function_name,
                     step.before_hook.snippet,
@@ -606,6 +619,7 @@ class FlowEngine:
                     run.trace,
                     flow_dir,
                     flow_path,
+                    default_skipped_response=step.skipped_response,
                 )
                 self._handle_assertion_results(
                     run,
@@ -620,24 +634,26 @@ class FlowEngine:
                 and self._has_expect_response_matcher(step.expect)
             )
 
-            response_hex = ""
+            response_hex: str | None = None
             sent_count = 0
-            for base_index, request_hex in enumerate(request_sequence):
-                per_message_sequence = [request_hex]
+            last_request_hex = ""
+            for base_index, request_item in enumerate(request_items):
+                per_message_items = [request_item]
                 if step.message_hook:
-                    per_message_sequence, hook_assertions = self._apply_message_hook(
+                    per_message_items, hook_assertions = self._apply_message_hook(
                         step.message_hook.script_path,
                         step.message_hook.function_name,
                         step.message_hook.snippet,
-                        request_hex,
+                        request_item.request_hex,
                         previous_response_hex,
                         variables,
                         run.trace,
                         flow_dir,
                         flow_path,
                         message_index=base_index,
-                        message_total=len(request_sequence),
+                        message_total=len(request_items),
                         step_name=step.name,
+                        default_skipped_response=request_item.skipped_response,
                     )
                     self._handle_assertion_results(
                         run,
@@ -646,20 +662,33 @@ class FlowEngine:
                         phase="message_hook",
                     )
 
-                for request_hex in per_message_sequence:
-                    response = await self._uds_client.send(
-                        request_hex,
-                        timeout_ms=step.timeout_ms,
-                        addressing_mode=addressing_mode,
-                    )
-                    response_hex = str(response["response_hex"])
+                for dispatch_item in per_message_items:
+                    request_hex = dispatch_item.request_hex
+                    skipped_response = dispatch_item.skipped_response
+                    if skipped_response:
+                        await self._uds_client.send_no_response(
+                            request_hex,
+                            addressing_mode=addressing_mode,
+                        )
+                        response_hex = None
+                    else:
+                        response = await self._uds_client.send(
+                            request_hex,
+                            timeout_ms=step.timeout_ms,
+                            addressing_mode=addressing_mode,
+                        )
+                        response_hex = str(response["response_hex"])
+                        previous_response_hex = response_hex
+
+                    last_request_hex = request_hex
 
                     item: dict[str, Any] = {
                         "step": step.name,
                         "request_hex": request_hex,
                         "response_hex": response_hex,
+                        "skipped_response": skipped_response,
                         "request_index": sent_count,
-                        "request_total": len(request_sequence),
+                        "request_total": len(request_items),
                         "repeat_index": repeat_index,
                         "sub_flow_depth": depth,
                         "sub_flow_name": sub_flow_name,
@@ -667,7 +696,6 @@ class FlowEngine:
                     }
                     run.trace.append(item)
                     self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
-                    previous_response_hex = response_hex
 
                     if check_each_response and step.expect is not None:
                         matcher_results = self._evaluate_expect_response_match(
@@ -699,6 +727,8 @@ class FlowEngine:
                         )
 
                     sent_count += 1
+
+            request_hex = last_request_hex
 
             if step.after_hook:
                 response_hex, hook_assertions = self._apply_after_hook(
@@ -773,7 +803,9 @@ class FlowEngine:
         trace: list[dict[str, Any]],
         flow_dir: Path,
         flow_path: Path | None,
-    ) -> tuple[list[str], list[_AssertionResult]]:
+        *,
+        default_skipped_response: bool,
+    ) -> tuple[list[_RequestDispatchItem], list[_AssertionResult]]:
         context_variables = dict(variables)
         context = self._build_hook_context(
             request_hex=request_hex,
@@ -785,18 +817,11 @@ class FlowEngine:
         )
         updates, assertions = self._run_hook(script_path, function_name, snippet, context)
 
-        sequence = updates.get("request_sequence_hex")
-        if sequence is not None:
-            if not isinstance(sequence, list) or not sequence:
-                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
-            if not all(isinstance(item, str) for item in sequence):
-                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
-            updated_sequence = sequence
-        else:
-            updated = updates.get("request_hex", request_hex)
-            if not isinstance(updated, str):
-                raise TypeError("hook output request_hex must be str")
-            updated_sequence = [updated]
+        updated_sequence = self._resolve_request_dispatch_items(
+            updates,
+            default_request_hex=request_hex,
+            default_skipped_response=default_skipped_response,
+        )
 
         self._apply_variable_updates(variables, context_variables, updates)
         return updated_sequence, assertions
@@ -816,7 +841,8 @@ class FlowEngine:
         message_index: int,
         message_total: int,
         step_name: str,
-    ) -> tuple[list[str], list[_AssertionResult]]:
+        default_skipped_response: bool,
+    ) -> tuple[list[_RequestDispatchItem], list[_AssertionResult]]:
         context_variables = dict(variables)
         context = self._build_hook_context(
             request_hex=request_hex,
@@ -831,18 +857,11 @@ class FlowEngine:
         )
         updates, assertions = self._run_hook(script_path, function_name, snippet, context)
 
-        sequence = updates.get("request_sequence_hex")
-        if sequence is not None:
-            if not isinstance(sequence, list) or not sequence:
-                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
-            if not all(isinstance(item, str) for item in sequence):
-                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
-            updated_sequence = sequence
-        else:
-            updated = updates.get("request_hex", request_hex)
-            if not isinstance(updated, str):
-                raise TypeError("hook output request_hex must be str")
-            updated_sequence = [updated]
+        updated_sequence = self._resolve_request_dispatch_items(
+            updates,
+            default_request_hex=request_hex,
+            default_skipped_response=default_skipped_response,
+        )
 
         self._apply_variable_updates(variables, context_variables, updates)
         return updated_sequence, assertions
@@ -853,12 +872,12 @@ class FlowEngine:
         function_name: str | None,
         snippet: str | None,
         request_hex: str,
-        response_hex: str,
+        response_hex: str | None,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
         flow_dir: Path,
         flow_path: Path | None,
-    ) -> tuple[str, list[_AssertionResult]]:
+    ) -> tuple[str | None, list[_AssertionResult]]:
         context_variables = dict(variables)
         context = self._build_hook_context(
             request_hex=request_hex,
@@ -871,11 +890,64 @@ class FlowEngine:
         updates, assertions = self._run_hook(script_path, function_name, snippet, context)
 
         updated = updates.get("response_hex", response_hex)
-        if not isinstance(updated, str):
-            raise TypeError("hook output response_hex must be str")
+        if updated is not None and not isinstance(updated, str):
+            raise TypeError("hook output response_hex must be str or None")
 
         self._apply_variable_updates(variables, context_variables, updates)
         return updated, assertions
+
+    def _resolve_request_dispatch_items(
+        self,
+        updates: dict[str, Any],
+        *,
+        default_request_hex: str,
+        default_skipped_response: bool,
+    ) -> list[_RequestDispatchItem]:
+        request_items = updates.get("request_items")
+        if request_items is not None:
+            if not isinstance(request_items, list) or not request_items:
+                raise TypeError("hook output request_items must be a non-empty list[dict]")
+            parsed_items: list[_RequestDispatchItem] = []
+            for item in request_items:
+                if not isinstance(item, dict):
+                    raise TypeError("hook output request_items must be a non-empty list[dict]")
+                request_hex = item.get("request_hex")
+                if not isinstance(request_hex, str):
+                    raise TypeError("hook output request_items[].request_hex must be str")
+                skipped_response = item.get("skipped_response", default_skipped_response)
+                if not isinstance(skipped_response, bool):
+                    raise TypeError("hook output request_items[].skipped_response must be bool")
+                parsed_items.append(
+                    _RequestDispatchItem(
+                        request_hex=request_hex,
+                        skipped_response=skipped_response,
+                    )
+                )
+            return parsed_items
+
+        sequence = updates.get("request_sequence_hex")
+        if sequence is not None:
+            if not isinstance(sequence, list) or not sequence:
+                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
+            if not all(isinstance(item, str) for item in sequence):
+                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
+            return [
+                _RequestDispatchItem(
+                    request_hex=request_hex,
+                    skipped_response=default_skipped_response,
+                )
+                for request_hex in sequence
+            ]
+
+        updated = updates.get("request_hex", default_request_hex)
+        if not isinstance(updated, str):
+            raise TypeError("hook output request_hex must be str")
+        return [
+            _RequestDispatchItem(
+                request_hex=updated,
+                skipped_response=default_skipped_response,
+            )
+        ]
 
     def _run_hook(
         self,
@@ -1062,12 +1134,25 @@ class FlowEngine:
         assertions: list[StepAssertion],
         *,
         request_hex: str,
-        response_hex: str,
+        response_hex: str | None,
     ) -> list[_AssertionResult]:
         results: list[_AssertionResult] = []
         for assertion in assertions:
             try:
                 actual_hex = response_hex if assertion.source == "response_hex" else request_hex
+                if actual_hex is None:
+                    results.append(
+                        _AssertionResult(
+                            ok=False,
+                            on_fail=assertion.on_fail,
+                            name=assertion.name,
+                            message=(
+                                assertion.message
+                                or "response_hex is missing for assertion; request used skipped_response=true"
+                            ),
+                        )
+                    )
+                    continue
                 normalized = _normalize_hex(actual_hex, field_name=assertion.source)
                 data = bytes.fromhex(normalized)
             except ValueError as exc:
@@ -1223,10 +1308,23 @@ class FlowEngine:
         self,
         expect: StepExpect,
         *,
-        response_hex: str,
+        response_hex: str | None,
     ) -> list[_AssertionResult]:
         if not self._has_expect_response_matcher(expect):
             return []
+
+        if response_hex is None:
+            return [
+                _AssertionResult(
+                    ok=False,
+                    on_fail=expect.response_on_fail,
+                    name="expect.response_missing",
+                    message=(
+                        "expect response matcher cannot run: response_hex is missing "
+                        "(request used skipped_response=true)"
+                    ),
+                )
+            ]
 
         normalized = _normalize_hex(response_hex, field_name="response_hex").upper()
 

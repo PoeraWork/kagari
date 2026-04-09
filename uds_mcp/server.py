@@ -178,7 +178,8 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             "after_hook (response/variables updates). "
             "Hook context includes request_hex/response_hex/variables/read-only trace, and for "
             "message_hook also message_index/message_total/step_name. "
-            "Hook outputs can include request_hex, request_sequence_hex(list[str]), response_hex, "
+            "Hook outputs can include request_hex, request_sequence_hex(list[str]), "
+            "request_items(list[{request_hex, skipped_response}]), response_hex, "
             "variables, and transfer segments from segments_hook. "
             "transfer_data uses standardized segments(address+data_hex) with optional "
             "segments_hook for dynamic generation, and check_each_response for per-block "
@@ -322,7 +323,12 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                         "flow_dir",
                         "flow_path",
                     ],
-                    "outputs": ["request_hex", "request_sequence_hex", "variables"],
+                    "outputs": [
+                        "request_hex",
+                        "request_sequence_hex",
+                        "request_items",
+                        "variables",
+                    ],
                 },
                 "message_hook": {
                     "purpose": "modify each generated UDS message in a step",
@@ -337,7 +343,12 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                         "flow_dir",
                         "flow_path",
                     ],
-                    "outputs": ["request_hex", "request_sequence_hex", "variables"],
+                    "outputs": [
+                        "request_hex",
+                        "request_sequence_hex",
+                        "request_items",
+                        "variables",
+                    ],
                 },
                 "after_hook": {
                     "purpose": "modify final response / update variables after send",
@@ -388,6 +399,7 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                 "sub_flow": "str|None - path to sub-flow YAML file (mutually exclusive with send/transfer_data)",
                 "repeat": "int>=1 - number of times to repeat this step (default 1)",
                 "addressing_mode": "physical|functional|inherit - UDS addressing mode (default inherit from flow)",
+                "skipped_response": "bool - send request without waiting UDS response (default false)",
             },
             "flow_fields": {
                 "default_addressing_mode": "physical|functional - default addressing mode for steps with inherit (default physical)",

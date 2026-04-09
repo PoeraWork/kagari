@@ -99,6 +99,7 @@ class TransferDataConfig(BaseModel):
 class FlowStep(BaseModel):
     name: str
     send: str | None = Field(default=None, description="UDS request hex string")
+    skipped_response: bool = False
     sub_flow: str | None = None
     repeat: int = Field(default=1, ge=1)
     timeout_ms: int = 1000
