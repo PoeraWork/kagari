@@ -145,6 +145,7 @@ class FlowStep(BaseModel):
 class FlowDefinition(BaseModel):
     name: str
     version: str = "1.0"
+    repeat: int = Field(default=1, ge=1)
     tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only"
     default_addressing_mode: Literal["physical", "functional"] = "physical"
     variables: dict[str, Any] = Field(default_factory=dict)

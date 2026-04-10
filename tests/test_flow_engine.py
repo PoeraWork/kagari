@@ -150,6 +150,36 @@ def test_before_hook_can_read_previous_response_and_write_variables() -> None:
     asyncio.run(_run())
 
 
+def test_flow_level_repeat_replays_whole_flow() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="flow_level_repeat",
+            repeat=3,
+            steps=[
+                {
+                    "name": "request_seed",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert uds.call_log == [("send", "2711"), ("send", "2711"), ("send", "2711")]
+        trace = engine.get_trace(run_id)
+        assert len(trace) == 3
+
+    asyncio.run(_run())
+
+
 def test_tester_present_policy_during_flow_with_step_off() -> None:
     async def _run() -> None:
         uds = _FakeUdsClient()

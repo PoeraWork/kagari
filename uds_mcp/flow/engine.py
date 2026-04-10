@@ -407,45 +407,46 @@ class FlowEngine:
                 await self._uds_client.start_tester_present_owner("flow-run")
                 flow_owner_active = True
 
-            for step in flow.steps:
-                if run.stop_requested:
-                    run.status = FlowStatus.STOPPED
-                    self._log_state(run)
-                    return
-
-                for repeat_i in range(step.repeat):
+            for _ in range(flow.repeat):
+                for step in flow.steps:
                     if run.stop_requested:
                         run.status = FlowStatus.STOPPED
                         self._log_state(run)
                         return
 
-                    if step.sub_flow is not None:
-                        await self._run_sub_flow(
-                            run,
-                            step.sub_flow,
-                            variables,
-                            flow,
-                            depth=1,
-                            repeat_index=repeat_i,
-                            flow_owner_active=flow_owner_active,
-                        )
-                        if step.delay_ms > 0:
-                            await self._wait_step_delay(run, step.delay_ms)
-                            if run.stop_requested:
-                                run.status = FlowStatus.STOPPED
-                                self._log_state(run)
-                                return
-                    else:
-                        await self._run_step(
-                            run,
-                            step,
-                            variables,
-                            flow,
-                            flow_dir,
-                            flow_path,
-                            repeat_index=repeat_i,
-                            flow_owner_active=flow_owner_active,
-                        )
+                    for repeat_i in range(step.repeat):
+                        if run.stop_requested:
+                            run.status = FlowStatus.STOPPED
+                            self._log_state(run)
+                            return
+
+                        if step.sub_flow is not None:
+                            await self._run_sub_flow(
+                                run,
+                                step.sub_flow,
+                                variables,
+                                flow,
+                                depth=1,
+                                repeat_index=repeat_i,
+                                flow_owner_active=flow_owner_active,
+                            )
+                            if step.delay_ms > 0:
+                                await self._wait_step_delay(run, step.delay_ms)
+                                if run.stop_requested:
+                                    run.status = FlowStatus.STOPPED
+                                    self._log_state(run)
+                                    return
+                        else:
+                            await self._run_step(
+                                run,
+                                step,
+                                variables,
+                                flow,
+                                flow_dir,
+                                flow_path,
+                                repeat_index=repeat_i,
+                                flow_owner_active=flow_owner_active,
+                            )
 
             run.status = FlowStatus.DONE
             self._log_state(run)
@@ -497,47 +498,48 @@ class FlowEngine:
 
         sub_flow_name = sub_flow.name
 
-        for step in sub_flow.steps:
-            if run.stop_requested:
-                run.status = FlowStatus.STOPPED
-                self._log_state(run)
-                return
-
-            for repeat_i in range(step.repeat):
+        for _ in range(sub_flow.repeat):
+            for step in sub_flow.steps:
                 if run.stop_requested:
                     run.status = FlowStatus.STOPPED
                     self._log_state(run)
                     return
 
-                if step.sub_flow is not None:
-                    await self._run_sub_flow(
-                        run,
-                        step.sub_flow,
-                        variables,
-                        sub_flow,
-                        depth=depth + 1,
-                        repeat_index=repeat_i,
-                        flow_owner_active=flow_owner_active,
-                    )
-                    if step.delay_ms > 0:
-                        await self._wait_step_delay(run, step.delay_ms)
-                        if run.stop_requested:
-                            run.status = FlowStatus.STOPPED
-                            self._log_state(run)
-                            return
-                else:
-                    await self._run_step(
-                        run,
-                        step,
-                        variables,
-                        sub_flow,
-                        sub_flow_dir,
-                        path.resolve(),  # noqa: ASYNC240
-                        depth=depth,
-                        repeat_index=repeat_i,
-                        flow_owner_active=flow_owner_active,
-                        sub_flow_name=sub_flow_name,
-                    )
+                for repeat_i in range(step.repeat):
+                    if run.stop_requested:
+                        run.status = FlowStatus.STOPPED
+                        self._log_state(run)
+                        return
+
+                    if step.sub_flow is not None:
+                        await self._run_sub_flow(
+                            run,
+                            step.sub_flow,
+                            variables,
+                            sub_flow,
+                            depth=depth + 1,
+                            repeat_index=repeat_i,
+                            flow_owner_active=flow_owner_active,
+                        )
+                        if step.delay_ms > 0:
+                            await self._wait_step_delay(run, step.delay_ms)
+                            if run.stop_requested:
+                                run.status = FlowStatus.STOPPED
+                                self._log_state(run)
+                                return
+                    else:
+                        await self._run_step(
+                            run,
+                            step,
+                            variables,
+                            sub_flow,
+                            sub_flow_dir,
+                            path.resolve(),  # noqa: ASYNC240
+                            depth=depth,
+                            repeat_index=repeat_i,
+                            flow_owner_active=flow_owner_active,
+                            sub_flow_name=sub_flow_name,
+                        )
 
     async def _run_step(
         self,

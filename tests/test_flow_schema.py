@@ -207,6 +207,28 @@ def test_step_supports_can_tx_hook() -> None:
     assert flow.steps[0].can_tx_hook is not None
 
 
+def test_flow_repeat_defaults_to_one() -> None:
+    flow = FlowDefinition(
+        name="flow_repeat_default",
+        steps=[{"name": "session", "send": "1003"}],
+    )
+    assert flow.repeat == 1
+
+
+def test_flow_repeat_roundtrip_in_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "repeat_flow.yaml"
+    flow = FlowDefinition(
+        name="repeat_demo",
+        repeat=3,
+        steps=[{"name": "session", "send": "1003"}],
+    )
+
+    dump_flow_yaml(path, flow)
+    loaded = load_flow_yaml(path)
+
+    assert loaded.repeat == 3
+
+
 # ---------------------------------------------------------------------------
 # Task 1.6 – Unit tests for schema 变更
 # Requirements: 1.1, 1.2, 1.5, 3.1, 3.7, 9.1, 9.2, 9.7
