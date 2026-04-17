@@ -1,0 +1,22 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Launch Claude Code",
+            "type": "shell",
+            "command": "claude",
+            "options": {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "${config:claude.anthropic.baseUrl}",
+                    "ANTHROPIC_AUTH_TOKEN": "${config:claude.anthropic.authToken}",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${config:claude.anthropic.defaultOpusModel}",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${config:claude.anthropic.defaultSonnetModel}",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${config:claude.anthropic.defaultHaikuModel}",
+                    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        }
+    ]
+}
