@@ -10,7 +10,6 @@ from mcp.server.fastmcp import FastMCP
 from uds_mcp.can.config import CanConfig
 from uds_mcp.can.interface import CanInterface
 from uds_mcp.config import AppConfig
-from uds_mcp.crypto import aes_cmac_hex, build_security27_key
 from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine
 from uds_mcp.flow.schema import FlowDefinition
@@ -250,34 +249,6 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
     async def tester_present_status() -> dict[str, object]:
         status = await state.uds.tester_present_status()
         return {"ok": True, **status}
-
-    @mcp.tool(description="Compute AES-CMAC for hex input and return uppercase hex output.")
-    def crypto_aes_cmac(key_hex: str, data_hex: str, out_len: int = 16) -> dict[str, object]:
-        return {
-            "ok": True,
-            "cmac_hex": aes_cmac_hex(key_hex, data_hex, out_len=out_len),
-            "out_len": out_len,
-        }
-
-    @mcp.tool(description="Build SecurityAccess(0x27) key payload using AES-CMAC.")
-    def security27_build_key(
-        level: int,
-        seed_hex: str,
-        key_hex: str,
-        *,
-        out_len: int | None = None,
-        include_level_in_cmac: bool = False,
-    ) -> dict[str, object]:
-        return {
-            "ok": True,
-            **build_security27_key(
-                level,
-                seed_hex,
-                key_hex,
-                out_len=out_len,
-                include_level_in_cmac=include_level_in_cmac,
-            ),
-        }
 
     @mcp.tool(description="Load a flow definition file and register it in runtime.")
     def flow_load(path: str) -> dict[str, object]:

@@ -143,8 +143,6 @@ Used as fallback only when `uds.toml` is absent.
 - `tester_present_start`
 - `tester_present_stop`
 - `tester_present_status`
-- `crypto_aes_cmac`
-- `security27_build_key`
 - `flow_load`
 - `flow_register_inline`
 - `flow_list`
@@ -446,16 +444,10 @@ steps:
                 response_prefix: "6701"
 ```
 
-## SecurityAccess Helpers
-
-- `crypto_aes_cmac(key_hex, data_hex, out_len=16)`: generic AES-CMAC helper.
-- `security27_build_key(level, seed_hex, key_hex, out_len=None, include_level_in_cmac=False)`:
-  build derived key and `27 xx + key` request payload for service `0x27` flows.
-
 ## AI Collaboration Notes
 
 - Recommend using `uv` for environment management and command execution (`uv sync`, `uv run ...`).
-- For SecurityAccess (`0x27`) in flow mode, prefer MCP crypto tools over in-hook crypto imports.
+- For SecurityAccess (`0x27`) in flow mode, import `Crypto` (pycryptodome, bundled as a dependency) directly inside hooks to derive keys.
 - Use `response_hex` + variable write-back in `before_hook` to chain seed-read and key-send steps.
 
 ## Hook Runtime Safety
