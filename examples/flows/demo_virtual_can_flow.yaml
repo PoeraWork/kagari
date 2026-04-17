@@ -4,19 +4,21 @@ tester_present_policy: breakpoint_only
 variables:
   did: F190
 steps:
-  - name: enter_extended_session
-    send: "1003"
+  - kind: uds
+    name: enter_extended_session
+    request: "1003"
     timeout_ms: 1200
     tester_present: inherit
     expect:
       response_prefix: "5003"
 
-  - name: read_did_dynamic
-    send: "22F190"
+  - kind: uds
+    name: read_did_dynamic
+    request: "22F190"
     timeout_ms: 1200
     tester_present: inherit
     expect:
       response_prefix: "62F190"
     before_hook:
-      script_path: "../extensions/dynamic_payload.py"
-      function_name: "build_request"
+      script: "../extensions/dynamic_payload.py"
+      function: "build_request"

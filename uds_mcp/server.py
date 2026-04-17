@@ -12,7 +12,7 @@ from uds_mcp.can.interface import CanInterface
 from uds_mcp.config import AppConfig
 from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine
-from uds_mcp.flow.schema import FlowDefinition
+from uds_mcp.flow.schema import FlowDefinition, SubflowStep
 from uds_mcp.flow.templates import init_flow_template, list_flow_presets
 from uds_mcp.logging.exporters.blf import BlfExporter
 from uds_mcp.logging.store import EventStore
@@ -181,6 +181,10 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
             "request_items(list[{request_hex, skipped_response}]), response_hex, "
             "variables, can_frames(list[{arbitration_id,data_hex,is_extended_id?}]), "
             "and transfer segments from segments_hook. "
+            "Step kinds: uds (UDS request+hooks), transfer (transfer_data blocks), "
+            "subflow (nested flow YAML), can (fire-and-forget CAN frames via can_tx_hook), "
+            "wait (non-blocking delay). Hook return values are typed pydantic models with "
+            "extra=forbid — unknown keys raise ValidationError. "
             "transfer_data uses standardized segments(address+data_hex) with optional "
             "segments_hook for dynamic generation, and check_each_response for per-block "
             "expect checking policy. Hook runtime uses full Python "
@@ -264,11 +268,11 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         flow = FlowDefinition.model_validate(
             {"name": name, "variables": variables or {}, "steps": steps}
         )
-        # Validate sub_flow paths are absolute
+        # Validate subflow paths are absolute
         for step in flow.steps:
-            if step.sub_flow is not None and not Path(step.sub_flow).is_absolute():
+            if isinstance(step, SubflowStep) and not Path(step.subflow).is_absolute():
                 raise ValueError(
-                    f"sub_flow path must be absolute when using flow_register_inline: {step.sub_flow}"
+                    f"subflow path must be absolute when using flow_register_inline: {step.subflow}"
                 )
         state.flow_engine.register(flow)
         return {"ok": True, "flow": flow.name, "steps": len(flow.steps)}
@@ -385,11 +389,22 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
                 "note": "extension_import_whitelist is retained for backward compatibility",
             },
             "step_fields": {
-                "sub_flow": "str|None - path to sub-flow YAML file (mutually exclusive with send/transfer_data)",
+                "kind": "uds|transfer|subflow|can|wait - discriminator selecting step semantics",
+                "name": "str - unique step name",
                 "repeat": "int>=1 - number of times to repeat this step (default 1)",
-                "addressing_mode": "physical|functional|inherit - UDS addressing mode (default inherit from flow)",
-                "skipped_response": "bool - send request without waiting UDS response (default false)",
-                "can_tx_hook": "HookConfig|None - send extra raw CAN frames per dispatched request",
+                "timeout_ms": "int - UDS response wait in ms (default 1000)",
+                "delay_ms": "int>=0 - non-blocking delay after step (wait step requires >=1)",
+                "breakpoint": "bool - pause flow before running this step",
+                "tester_present": "inherit|off|physical|functional - step-level TP override",
+                "addressing_mode": "inherit|physical|functional - UDS addressing for this step",
+                "uds.request": "str - UDS request hex",
+                "uds.skipped_response": "bool - send without waiting UDS response",
+                "uds.expect": "StepExpect|None",
+                "uds.before_hook/message_hook/can_tx_hook/after_hook": "HookConfig|None",
+                "transfer.transfer_data": "TransferDataConfig",
+                "subflow.subflow": "str - path to sub-flow YAML file",
+                "can.can_tx_hook": "HookConfig - required; produces CAN frames to emit (fire-and-forget)",
+                "wait.delay_ms": "int>=1 - blocking wait duration",
             },
             "flow_fields": {
                 "default_addressing_mode": "physical|functional - default addressing mode for steps with inherit (default physical)",
@@ -404,7 +419,9 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         *,
         include_dynamic_hook: bool = True,
         tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only",
-        default_step_tester_present: Literal["inherit", "on", "off"] = "inherit",
+        default_step_tester_present: Literal[
+            "inherit", "off", "physical", "functional"
+        ] = "inherit",
         overwrite: bool = False,
         register: bool = False,
     ) -> dict[str, object]:
@@ -464,17 +481,17 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         state.flow_engine.set_breakpoint(flow_name, step_name, enabled=enabled)
         return {"ok": True}
 
-    @mcp.tool(description="Patch a flow step send/expect fields at runtime.")
+    @mcp.tool(description="Patch a flow step request/expect fields at runtime.")
     def flow_patch_step(
         flow_name: str,
         step_name: str,
-        send_hex: str | None = None,
+        request_hex: str | None = None,
         expect_prefix: str | None = None,
     ) -> dict[str, object]:
         state.flow_engine.patch_step(
             flow_name,
             step_name,
-            send_hex=send_hex,
+            request_hex=request_hex,
             expect_prefix=expect_prefix,
         )
         return {"ok": True}

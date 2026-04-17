@@ -4,7 +4,13 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 
-from uds_mcp.flow.schema import FlowDefinition, FlowStep, HookConfig, StepExpect, dump_flow_yaml
+from uds_mcp.flow.schema import (
+    FlowDefinition,
+    HookConfig,
+    StepExpect,
+    UdsStep,
+    dump_flow_yaml,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -22,7 +28,9 @@ def create_flow_template(
     preset: str = "session_did_read",
     include_dynamic_hook: bool = True,
     tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only",
-    default_step_tester_present: Literal["inherit", "on", "off"] = "inherit",
+    default_step_tester_present: Literal[
+        "inherit", "off", "physical", "functional"
+    ] = "inherit",
     default_addressing_mode: Literal["physical", "functional"] = "physical",
 ) -> FlowDefinition:
     if preset not in _FLOW_PRESETS:
@@ -31,9 +39,9 @@ def create_flow_template(
 
     if preset == "minimal":
         steps = [
-            FlowStep(
+            UdsStep(
                 name="read_data_by_identifier",
-                send="22F190",
+                request="22F190",
                 timeout_ms=1200,
                 expect=StepExpect(response_prefix="62F190"),
                 tester_present=default_step_tester_present,
@@ -46,17 +54,17 @@ def create_flow_template(
             steps=steps,
         )
 
-    step_with_hook = FlowStep(
+    step_with_hook = UdsStep(
         name="read_did_dynamic",
-        send="22F190",
+        request="22F190",
         timeout_ms=1200,
         expect=StepExpect(response_prefix="62F190"),
         tester_present=default_step_tester_present,
     )
     if include_dynamic_hook:
         step_with_hook.before_hook = HookConfig(
-            script_path="../extensions/dynamic_payload.py",
-            function_name="build_request",
+            script="../extensions/dynamic_payload.py",
+            function="build_request",
         )
 
     return FlowDefinition(
@@ -65,9 +73,9 @@ def create_flow_template(
         default_addressing_mode=default_addressing_mode,
         variables={"did": "F190"},
         steps=[
-            FlowStep(
+            UdsStep(
                 name="enter_extended_session",
-                send="1003",
+                request="1003",
                 timeout_ms=1200,
                 expect=StepExpect(response_prefix="5003"),
                 tester_present=default_step_tester_present,
@@ -88,7 +96,9 @@ def init_flow_template(
     preset: str = "session_did_read",
     include_dynamic_hook: bool = True,
     tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only",
-    default_step_tester_present: Literal["inherit", "on", "off"] = "inherit",
+    default_step_tester_present: Literal[
+        "inherit", "off", "physical", "functional"
+    ] = "inherit",
     default_addressing_mode: Literal["physical", "functional"] = "physical",
     path: Path | None = None,
     overwrite: bool = False,

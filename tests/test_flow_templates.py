@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from uds_mcp.flow.schema import FlowDefinition
+from uds_mcp.flow.schema import FlowDefinition, SubflowStep, UdsStep
 from uds_mcp.flow.templates import create_flow_template, init_flow_template, list_flow_presets
 
 
@@ -20,23 +20,27 @@ def test_create_flow_template_session_did_read() -> None:
     assert flow.tester_present_policy == "breakpoint_only"
     assert flow.steps[0].name == "enter_extended_session"
     assert flow.steps[0].tester_present == "inherit"
-    assert flow.steps[1].before_hook is not None
-    assert flow.steps[1].before_hook.script_path == "../extensions/dynamic_payload.py"
+    step = flow.steps[1]
+    assert isinstance(step, UdsStep)
+    assert step.before_hook is not None
+    assert step.before_hook.script == "../extensions/dynamic_payload.py"
 
 
 def test_create_flow_template_without_hook() -> None:
     flow = create_flow_template("demo", include_dynamic_hook=False)
-    assert flow.steps[1].before_hook is None
+    step = flow.steps[1]
+    assert isinstance(step, UdsStep)
+    assert step.before_hook is None
 
 
 def test_create_flow_template_with_tester_present_options() -> None:
     flow = create_flow_template(
         "demo",
         tester_present_policy="during_flow",
-        default_step_tester_present="on",
+        default_step_tester_present="physical",
     )
     assert flow.tester_present_policy == "during_flow"
-    assert all(step.tester_present == "on" for step in flow.steps)
+    assert all(step.tester_present == "physical" for step in flow.steps)
 
 
 def test_init_flow_template_write_file(tmp_path: Path) -> None:
@@ -101,38 +105,38 @@ def test_init_flow_template_default_addressing_mode(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_register_inline_rejects_relative_sub_flow() -> None:
-    """Relative sub_flow path raises ValueError in inline registration validation."""
+def test_register_inline_rejects_relative_subflow() -> None:
+    """Relative subflow path raises ValueError in inline registration validation."""
     flow = FlowDefinition.model_validate(
         {
             "name": "test_flow",
-            "steps": [{"name": "sub_step", "sub_flow": "flows/child.yaml"}],
+            "steps": [
+                {"kind": "subflow", "name": "sub_step", "subflow": "flows/child.yaml"}
+            ],
         }
     )
-    with pytest.raises(ValueError, match="sub_flow path must be absolute"):
+    with pytest.raises(ValueError, match="subflow path must be absolute"):
         for step in flow.steps:
-            if step.sub_flow is not None and not Path(step.sub_flow).is_absolute():
+            if isinstance(step, SubflowStep) and not Path(step.subflow).is_absolute():
                 raise ValueError(
-                    f"sub_flow path must be absolute when using "
-                    f"flow_register_inline: {step.sub_flow}"
+                    f"subflow path must be absolute when using "
+                    f"flow_register_inline: {step.subflow}"
                 )
 
 
-def test_register_inline_accepts_absolute_sub_flow() -> None:
-    """Absolute sub_flow path is accepted in inline registration validation."""
-    # Use a platform-aware absolute path
+def test_register_inline_accepts_absolute_subflow() -> None:
+    """Absolute subflow path is accepted in inline registration validation."""
     abs_path = (
         str(Path("C:/flows/child.yaml")) if not Path("/x").is_absolute() else "/flows/child.yaml"
     )
     flow = FlowDefinition.model_validate(
         {
             "name": "test_flow",
-            "steps": [{"name": "sub_step", "sub_flow": abs_path}],
+            "steps": [{"kind": "subflow", "name": "sub_step", "subflow": abs_path}],
         }
     )
-    # Should NOT raise
     for step in flow.steps:
-        if step.sub_flow is not None and not Path(step.sub_flow).is_absolute():
+        if isinstance(step, SubflowStep) and not Path(step.subflow).is_absolute():
             raise ValueError(
-                f"sub_flow path must be absolute when using flow_register_inline: {step.sub_flow}"
+                f"subflow path must be absolute when using flow_register_inline: {step.subflow}"
             )

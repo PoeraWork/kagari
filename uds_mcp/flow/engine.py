@@ -10,14 +10,26 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
+from pydantic import ValidationError
 
 from uds_mcp.flow.schema import (
+    AfterHookReturn,
+    BeforeHookReturn,
+    CanStep,
+    CanTxHookReturn,
     FlowDefinition,
     FlowStep,
+    HookConfig,
+    MessageHookReturn,
+    SegmentsHookReturn,
     StepAssertion,
     StepExpect,
+    SubflowStep,
     TransferDataConfig,
     TransferSegment,
+    TransferStep,
+    UdsStep,
+    WaitStep,
     dump_flow_yaml,
     load_flow_yaml,
 )
@@ -321,11 +333,9 @@ class FlowEngine:
         return result
 
     def get_trace(self, run_id: str) -> list[dict[str, Any]]:
-        """Return the full trace for a flow run."""
         return self._runs[run_id].trace
 
     def trace_search(self, run_id: str, pattern: str, limit: int = 100) -> list[dict[str, Any]]:
-        """Search trace records by regex pattern."""
         if run_id not in self._runs:
             raise KeyError(f"run_id not found: {run_id}")
         try:
@@ -344,7 +354,6 @@ class FlowEngine:
         return results
 
     def _count_steps(self, trace: list[dict[str, Any]]) -> int:
-        """Count unique step names in the trace."""
         return len({entry["step"] for entry in trace if "step" in entry})
 
     def stop(self, run_id: str) -> None:
@@ -369,15 +378,19 @@ class FlowEngine:
         flow_name: str,
         step_name: str,
         *,
-        send_hex: str | None = None,
+        request_hex: str | None = None,
         expect_prefix: str | None = None,
     ) -> None:
         flow = self._flows[flow_name]
         for step in flow.steps:
             if step.name != step_name:
                 continue
-            if send_hex is not None:
-                step.send = send_hex
+            if not isinstance(step, UdsStep):
+                raise TypeError(
+                    f"patch_step only supports uds-kind steps (got {step.kind!r} for {step_name!r})"
+                )
+            if request_hex is not None:
+                step.request = request_hex
             if expect_prefix is not None:
                 if step.expect is None:
                     step.expect = StepExpect()
@@ -422,10 +435,10 @@ class FlowEngine:
                             self._log_state(run)
                             return
 
-                        if step.sub_flow is not None:
+                        if isinstance(step, SubflowStep):
                             await self._run_sub_flow(
                                 run,
-                                step.sub_flow,
+                                step.subflow,
                                 variables,
                                 flow,
                                 depth=1,
@@ -482,7 +495,6 @@ class FlowEngine:
         repeat_index: int = 0,  # noqa: ARG002
         flow_owner_active: bool = False,
     ) -> None:
-        """Load and recursively execute a sub-flow."""
         if depth > 10:
             raise ValueError(f"sub_flow nesting depth exceeded limit (10), current: {depth}")
 
@@ -493,7 +505,6 @@ class FlowEngine:
         sub_flow = load_flow_yaml(path)
         sub_flow_dir = path.resolve().parent  # noqa: ASYNC240
 
-        # Inherit parent's tester_present_policy unless sub-flow YAML explicitly sets its own
         raw_data = yaml.safe_load(path.read_text(encoding="utf-8"))  # noqa: ASYNC240
         if "tester_present_policy" not in raw_data:
             sub_flow.tester_present_policy = parent_flow.tester_present_policy
@@ -513,10 +524,10 @@ class FlowEngine:
                         self._log_state(run)
                         return
 
-                    if step.sub_flow is not None:
+                    if isinstance(step, SubflowStep):
                         await self._run_sub_flow(
                             run,
-                            step.sub_flow,
+                            step.subflow,
                             variables,
                             sub_flow,
                             depth=depth + 1,
@@ -561,14 +572,12 @@ class FlowEngine:
         flow_owner_suspended = False
 
         addressing_mode = _resolve_addressing_mode(step, flow)
-        tester_present_mode = _resolve_tester_present_addressing_mode(step, flow)
+        tester_present_mode = _resolve_tester_present_mode(step, flow)
 
-        if step.tester_present == "on":
-            # Step-level TP takes over: suspend any flow-run owner so the step's
-            # addressing mode is the one the controller actually uses (the
-            # controller keeps the mode of the current active period until all
-            # owners drop). Breakpoint TP (flow-breakpoint owner) is a separate
-            # owner added later and is unaffected by this suspension.
+        # Step-level TP override: a concrete physical/functional value means
+        # this step wants its own TP owner (taking precedence over any
+        # flow-run owner). "off" explicitly suspends any TP for this step.
+        if tester_present_mode is not None and step.tester_present != "inherit":
             if flow_owner_active:
                 await self._uds_client.stop_tester_present_owner("flow-run")
                 flow_owner_suspended = True
@@ -595,253 +604,50 @@ class FlowEngine:
                 run.status = FlowStatus.RUNNING
                 self._log_state(run)
 
-            if step.send is None and step.transfer_data is None:
-                if step.delay_ms <= 0:
-                    raise ValueError(f"step {step.name}: wait-only step requires delay_ms > 0")
-
-                wait_item: dict[str, Any] = {
-                    "step": step.name,
-                    "action": "wait",
-                    "delay_ms": step.delay_ms,
-                    "repeat_index": repeat_index,
-                    "sub_flow_depth": depth,
-                    "sub_flow_name": sub_flow_name,
-                    "addressing_mode": addressing_mode,
-                }
-                run.trace.append(wait_item)
-                self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=wait_item))
-
-                await self._wait_step_delay(run, step.delay_ms)
-                if run.stop_requested:
-                    run.status = FlowStatus.STOPPED
-                    self._log_state(run)
+            if isinstance(step, WaitStep):
+                await self._execute_wait_step(
+                    run,
+                    step,
+                    repeat_index=repeat_index,
+                    depth=depth,
+                    sub_flow_name=sub_flow_name,
+                    addressing_mode=addressing_mode,
+                )
                 return
 
-            request_sequence = self._build_step_request_sequence(
+            if isinstance(step, CanStep):
+                await self._execute_can_step(
+                    run,
+                    step,
+                    variables,
+                    flow_dir,
+                    flow_path,
+                    repeat_index=repeat_index,
+                    depth=depth,
+                    sub_flow_name=sub_flow_name,
+                    addressing_mode=addressing_mode,
+                )
+                if step.delay_ms > 0:
+                    await self._wait_step_delay(run, step.delay_ms)
+                    if run.stop_requested:
+                        run.status = FlowStatus.STOPPED
+                        self._log_state(run)
+                        return
+                return
+
+            # UdsStep or TransferStep
+            assert isinstance(step, UdsStep | TransferStep)
+            await self._execute_uds_or_transfer_step(
+                run,
                 step,
                 variables,
-                run.trace,
                 flow_dir,
                 flow_path,
+                repeat_index=repeat_index,
+                depth=depth,
+                sub_flow_name=sub_flow_name,
+                addressing_mode=addressing_mode,
             )
-            request_items = [
-                _RequestDispatchItem(
-                    request_hex=request_hex,
-                    skipped_response=step.skipped_response,
-                )
-                for request_hex in request_sequence
-            ]
-            base_request_hex = request_items[0].request_hex
-            previous_response_hex = run.trace[-1].get("response_hex") if run.trace else None
-            if step.before_hook:
-                request_items, hook_assertions = self._apply_before_hook(
-                    step.before_hook.script_path,
-                    step.before_hook.function_name,
-                    step.before_hook.snippet,
-                    base_request_hex,
-                    previous_response_hex,
-                    variables,
-                    run.trace,
-                    flow_dir,
-                    flow_path,
-                    default_skipped_response=step.skipped_response,
-                )
-                self._handle_assertion_results(
-                    run,
-                    step,
-                    hook_assertions,
-                    phase="before_hook",
-                )
-
-            check_each_response = (
-                step.transfer_data is not None
-                and step.transfer_data.check_each_response
-                and self._has_expect_response_matcher(step.expect)
-            )
-
-            response_hex: str | None = None
-            sent_count = 0
-            last_request_hex = ""
-            for base_index, request_item in enumerate(request_items):
-                per_message_items = [request_item]
-                if step.message_hook:
-                    per_message_items, hook_assertions = self._apply_message_hook(
-                        step.message_hook.script_path,
-                        step.message_hook.function_name,
-                        step.message_hook.snippet,
-                        request_item.request_hex,
-                        previous_response_hex,
-                        variables,
-                        run.trace,
-                        flow_dir,
-                        flow_path,
-                        message_index=base_index,
-                        message_total=len(request_items),
-                        step_name=step.name,
-                        default_skipped_response=request_item.skipped_response,
-                    )
-                    self._handle_assertion_results(
-                        run,
-                        step,
-                        hook_assertions,
-                        phase="message_hook",
-                    )
-
-                for dispatch_item in per_message_items:
-                    request_hex = dispatch_item.request_hex
-                    skipped_response = dispatch_item.skipped_response
-                    hook_message_total = len(request_items)
-                    if skipped_response:
-                        await self._uds_client.send_no_response(
-                            request_hex,
-                            addressing_mode=addressing_mode,
-                        )
-                        response_hex = None
-                    else:
-                        response = await self._uds_client.send(
-                            request_hex,
-                            timeout_ms=step.timeout_ms,
-                            addressing_mode=addressing_mode,
-                        )
-                        response_hex = str(response["response_hex"])
-                        previous_response_hex = response_hex
-
-                    last_request_hex = request_hex
-
-                    item: dict[str, Any] = {
-                        "step": step.name,
-                        "request_hex": request_hex,
-                        "response_hex": response_hex,
-                        "skipped_response": skipped_response,
-                        "request_index": sent_count,
-                        "request_total": len(request_items),
-                        "repeat_index": repeat_index,
-                        "sub_flow_depth": depth,
-                        "sub_flow_name": sub_flow_name,
-                        "addressing_mode": addressing_mode,
-                    }
-                    run.trace.append(item)
-                    self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
-
-                    if step.can_tx_hook:
-                        can_frames, hook_assertions = self._apply_can_tx_hook(
-                            step.can_tx_hook.script_path,
-                            step.can_tx_hook.function_name,
-                            step.can_tx_hook.snippet,
-                            request_hex,
-                            response_hex,
-                            variables,
-                            run.trace,
-                            flow_dir,
-                            flow_path,
-                            message_index=base_index,
-                            message_total=hook_message_total,
-                            step_name=step.name,
-                            skipped_response=skipped_response,
-                            addressing_mode=addressing_mode,
-                        )
-                        self._handle_assertion_results(
-                            run,
-                            step,
-                            hook_assertions,
-                            phase="can_tx_hook",
-                            request_hex=request_hex,
-                            response_hex=response_hex,
-                        )
-                        if can_frames:
-                            await self._uds_client.send_can_frames(
-                                [
-                                    {
-                                        "arbitration_id": frame.arbitration_id,
-                                        "data_hex": frame.data_hex,
-                                        "is_extended_id": frame.is_extended_id,
-                                    }
-                                    for frame in can_frames
-                                ]
-                            )
-
-                    if check_each_response and step.expect is not None:
-                        matcher_results = self._evaluate_expect_response_match(
-                            step.expect,
-                            response_hex=response_hex,
-                        )
-                        self._handle_assertion_results(
-                            run,
-                            step,
-                            matcher_results,
-                            phase="expect_response",
-                            request_hex=request_hex,
-                            response_hex=response_hex,
-                        )
-
-                    if step.expect and step.expect.assertions and step.expect.apply_each_response:
-                        assertion_results = self._evaluate_step_assertions(
-                            step.expect.assertions,
-                            request_hex=request_hex,
-                            response_hex=response_hex,
-                        )
-                        self._handle_assertion_results(
-                            run,
-                            step,
-                            assertion_results,
-                            phase="expect",
-                            request_hex=request_hex,
-                            response_hex=response_hex,
-                        )
-
-                    sent_count += 1
-
-            request_hex = last_request_hex
-
-            if step.after_hook:
-                response_hex, hook_assertions = self._apply_after_hook(
-                    step.after_hook.script_path,
-                    step.after_hook.function_name,
-                    step.after_hook.snippet,
-                    request_hex,
-                    response_hex,
-                    variables,
-                    run.trace,
-                    flow_dir,
-                    flow_path,
-                )
-                self._handle_assertion_results(
-                    run,
-                    step,
-                    hook_assertions,
-                    phase="after_hook",
-                    request_hex=request_hex,
-                    response_hex=response_hex,
-                )
-
-            if step.expect and step.expect.assertions and not step.expect.apply_each_response:
-                assertion_results = self._evaluate_step_assertions(
-                    step.expect.assertions,
-                    request_hex=request_hex,
-                    response_hex=response_hex,
-                )
-                self._handle_assertion_results(
-                    run,
-                    step,
-                    assertion_results,
-                    phase="expect",
-                    request_hex=request_hex,
-                    response_hex=response_hex,
-                )
-
-            if step.expect is not None and not check_each_response:
-                matcher_results = self._evaluate_expect_response_match(
-                    step.expect,
-                    response_hex=response_hex,
-                )
-                self._handle_assertion_results(
-                    run,
-                    step,
-                    matcher_results,
-                    phase="expect_response",
-                    request_hex=request_hex,
-                    response_hex=response_hex,
-                )
 
             if step.delay_ms > 0:
                 await self._wait_step_delay(run, step.delay_ms)
@@ -857,11 +663,331 @@ class FlowEngine:
                     "flow-run", addressing_mode=flow.tester_present_addressing_mode
                 )
 
+    async def _execute_wait_step(
+        self,
+        run: FlowRun,
+        step: WaitStep,
+        *,
+        repeat_index: int,
+        depth: int,
+        sub_flow_name: str | None,
+        addressing_mode: Literal["physical", "functional"],
+    ) -> None:
+        wait_item: dict[str, Any] = {
+            "step": step.name,
+            "action": "wait",
+            "delay_ms": step.delay_ms,
+            "repeat_index": repeat_index,
+            "sub_flow_depth": depth,
+            "sub_flow_name": sub_flow_name,
+            "addressing_mode": addressing_mode,
+        }
+        run.trace.append(wait_item)
+        self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=wait_item))
+
+        await self._wait_step_delay(run, step.delay_ms)
+        if run.stop_requested:
+            run.status = FlowStatus.STOPPED
+            self._log_state(run)
+
+    async def _execute_can_step(
+        self,
+        run: FlowRun,
+        step: CanStep,
+        variables: dict[str, Any],
+        flow_dir: Path,
+        flow_path: Path | None,
+        *,
+        repeat_index: int,
+        depth: int,
+        sub_flow_name: str | None,
+        addressing_mode: Literal["physical", "functional"],
+    ) -> None:
+        previous_response_hex = run.trace[-1].get("response_hex") if run.trace else None
+        can_frames, hook_assertions = self._apply_can_tx_hook(
+            step.can_tx_hook,
+            request_hex="",
+            response_hex=previous_response_hex,
+            variables=variables,
+            trace=run.trace,
+            flow_dir=flow_dir,
+            flow_path=flow_path,
+            message_index=0,
+            message_total=1,
+            step_name=step.name,
+            skipped_response=True,
+            addressing_mode=addressing_mode,
+        )
+        self._handle_assertion_results(
+            run,
+            step,
+            hook_assertions,
+            phase="can_tx_hook",
+        )
+
+        if can_frames:
+            await self._uds_client.send_can_frames(
+                [
+                    {
+                        "arbitration_id": frame.arbitration_id,
+                        "data_hex": frame.data_hex,
+                        "is_extended_id": frame.is_extended_id,
+                    }
+                    for frame in can_frames
+                ]
+            )
+
+        item: dict[str, Any] = {
+            "step": step.name,
+            "action": "can_tx",
+            "can_frame_count": len(can_frames),
+            "repeat_index": repeat_index,
+            "sub_flow_depth": depth,
+            "sub_flow_name": sub_flow_name,
+            "addressing_mode": addressing_mode,
+        }
+        run.trace.append(item)
+        self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+
+    async def _execute_uds_or_transfer_step(
+        self,
+        run: FlowRun,
+        step: UdsStep | TransferStep,
+        variables: dict[str, Any],
+        flow_dir: Path,
+        flow_path: Path | None,
+        *,
+        repeat_index: int,
+        depth: int,
+        sub_flow_name: str | None,
+        addressing_mode: Literal["physical", "functional"],
+    ) -> None:
+        request_sequence = self._build_step_request_sequence(
+            step,
+            variables,
+            run.trace,
+            flow_dir,
+            flow_path,
+        )
+        request_items = [
+            _RequestDispatchItem(
+                request_hex=request_hex,
+                skipped_response=step.skipped_response,
+            )
+            for request_hex in request_sequence
+        ]
+        base_request_hex = request_items[0].request_hex
+        previous_response_hex = run.trace[-1].get("response_hex") if run.trace else None
+
+        if step.before_hook is not None:
+            request_items, hook_assertions = self._apply_before_hook(
+                step.before_hook,
+                base_request_hex,
+                previous_response_hex,
+                variables,
+                run.trace,
+                flow_dir,
+                flow_path,
+                default_skipped_response=step.skipped_response,
+            )
+            self._handle_assertion_results(
+                run,
+                step,
+                hook_assertions,
+                phase="before_hook",
+            )
+
+        check_each_response = (
+            isinstance(step, TransferStep)
+            and step.transfer_data.check_each_response
+            and self._has_expect_response_matcher(step.expect)
+        )
+
+        response_hex: str | None = None
+        sent_count = 0
+        last_request_hex = ""
+        for base_index, request_item in enumerate(request_items):
+            per_message_items = [request_item]
+            if step.message_hook is not None:
+                per_message_items, hook_assertions = self._apply_message_hook(
+                    step.message_hook,
+                    request_item.request_hex,
+                    previous_response_hex,
+                    variables,
+                    run.trace,
+                    flow_dir,
+                    flow_path,
+                    message_index=base_index,
+                    message_total=len(request_items),
+                    step_name=step.name,
+                    default_skipped_response=request_item.skipped_response,
+                )
+                self._handle_assertion_results(
+                    run,
+                    step,
+                    hook_assertions,
+                    phase="message_hook",
+                )
+
+            for dispatch_item in per_message_items:
+                request_hex = dispatch_item.request_hex
+                skipped_response = dispatch_item.skipped_response
+                hook_message_total = len(request_items)
+                if skipped_response:
+                    await self._uds_client.send_no_response(
+                        request_hex,
+                        addressing_mode=addressing_mode,
+                    )
+                    response_hex = None
+                else:
+                    response = await self._uds_client.send(
+                        request_hex,
+                        timeout_ms=step.timeout_ms,
+                        addressing_mode=addressing_mode,
+                    )
+                    response_hex = str(response["response_hex"])
+                    previous_response_hex = response_hex
+
+                last_request_hex = request_hex
+
+                item: dict[str, Any] = {
+                    "step": step.name,
+                    "request_hex": request_hex,
+                    "response_hex": response_hex,
+                    "skipped_response": skipped_response,
+                    "request_index": sent_count,
+                    "request_total": len(request_items),
+                    "repeat_index": repeat_index,
+                    "sub_flow_depth": depth,
+                    "sub_flow_name": sub_flow_name,
+                    "addressing_mode": addressing_mode,
+                }
+                run.trace.append(item)
+                self._event_store.append(LogEvent(kind=EventKind.FLOW_STEP, payload=item))
+
+                if step.can_tx_hook is not None:
+                    can_frames, hook_assertions = self._apply_can_tx_hook(
+                        step.can_tx_hook,
+                        request_hex=request_hex,
+                        response_hex=response_hex,
+                        variables=variables,
+                        trace=run.trace,
+                        flow_dir=flow_dir,
+                        flow_path=flow_path,
+                        message_index=base_index,
+                        message_total=hook_message_total,
+                        step_name=step.name,
+                        skipped_response=skipped_response,
+                        addressing_mode=addressing_mode,
+                    )
+                    self._handle_assertion_results(
+                        run,
+                        step,
+                        hook_assertions,
+                        phase="can_tx_hook",
+                        request_hex=request_hex,
+                        response_hex=response_hex,
+                    )
+                    if can_frames:
+                        await self._uds_client.send_can_frames(
+                            [
+                                {
+                                    "arbitration_id": frame.arbitration_id,
+                                    "data_hex": frame.data_hex,
+                                    "is_extended_id": frame.is_extended_id,
+                                }
+                                for frame in can_frames
+                            ]
+                        )
+
+                if check_each_response and step.expect is not None:
+                    matcher_results = self._evaluate_expect_response_match(
+                        step.expect,
+                        response_hex=response_hex,
+                    )
+                    self._handle_assertion_results(
+                        run,
+                        step,
+                        matcher_results,
+                        phase="expect_response",
+                        request_hex=request_hex,
+                        response_hex=response_hex,
+                    )
+
+                if step.expect and step.expect.assertions and step.expect.apply_each_response:
+                    assertion_results = self._evaluate_step_assertions(
+                        step.expect.assertions,
+                        request_hex=request_hex,
+                        response_hex=response_hex,
+                    )
+                    self._handle_assertion_results(
+                        run,
+                        step,
+                        assertion_results,
+                        phase="expect",
+                        request_hex=request_hex,
+                        response_hex=response_hex,
+                    )
+
+                sent_count += 1
+
+        request_hex = last_request_hex
+
+        if step.after_hook is not None:
+            response_hex, hook_assertions = self._apply_after_hook(
+                step.after_hook,
+                request_hex,
+                response_hex,
+                variables,
+                run.trace,
+                flow_dir,
+                flow_path,
+            )
+            self._handle_assertion_results(
+                run,
+                step,
+                hook_assertions,
+                phase="after_hook",
+                request_hex=request_hex,
+                response_hex=response_hex,
+            )
+
+        if step.expect and step.expect.assertions and not step.expect.apply_each_response:
+            assertion_results = self._evaluate_step_assertions(
+                step.expect.assertions,
+                request_hex=request_hex,
+                response_hex=response_hex,
+            )
+            self._handle_assertion_results(
+                run,
+                step,
+                assertion_results,
+                phase="expect",
+                request_hex=request_hex,
+                response_hex=response_hex,
+            )
+
+        if step.expect is not None and not check_each_response:
+            matcher_results = self._evaluate_expect_response_match(
+                step.expect,
+                response_hex=response_hex,
+            )
+            self._handle_assertion_results(
+                run,
+                step,
+                matcher_results,
+                phase="expect_response",
+                request_hex=request_hex,
+                response_hex=response_hex,
+            )
+
+    # -----------------------------------------------------------------
+    # Hook application wrappers
+    # -----------------------------------------------------------------
+
     def _apply_before_hook(
         self,
-        script_path: str | None,
-        function_name: str | None,
-        snippet: str | None,
+        hook: HookConfig,
         request_hex: str,
         response_hex: str | None,
         variables: dict[str, Any],
@@ -880,22 +1006,21 @@ class FlowEngine:
             flow_dir=flow_dir,
             flow_path=flow_path,
         )
-        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
+        raw_updates, assertions = self._run_hook(hook, context)
+        parsed = _validate_hook_return(BeforeHookReturn, raw_updates, phase="before_hook")
 
         updated_sequence = self._resolve_request_dispatch_items(
-            updates,
+            parsed,
             default_request_hex=request_hex,
             default_skipped_response=default_skipped_response,
         )
 
-        self._apply_variable_updates(variables, context_variables, updates)
+        self._apply_variable_updates(variables, context_variables, parsed.variables)
         return updated_sequence, assertions
 
     def _apply_message_hook(
         self,
-        script_path: str | None,
-        function_name: str | None,
-        snippet: str | None,
+        hook: HookConfig,
         request_hex: str,
         response_hex: str | None,
         variables: dict[str, Any],
@@ -920,22 +1045,21 @@ class FlowEngine:
             message_total=message_total,
             step_name=step_name,
         )
-        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
+        raw_updates, assertions = self._run_hook(hook, context)
+        parsed = _validate_hook_return(MessageHookReturn, raw_updates, phase="message_hook")
 
         updated_sequence = self._resolve_request_dispatch_items(
-            updates,
+            parsed,
             default_request_hex=request_hex,
             default_skipped_response=default_skipped_response,
         )
 
-        self._apply_variable_updates(variables, context_variables, updates)
+        self._apply_variable_updates(variables, context_variables, parsed.variables)
         return updated_sequence, assertions
 
     def _apply_after_hook(
         self,
-        script_path: str | None,
-        function_name: str | None,
-        snippet: str | None,
+        hook: HookConfig,
         request_hex: str,
         response_hex: str | None,
         variables: dict[str, Any],
@@ -952,27 +1076,23 @@ class FlowEngine:
             flow_dir=flow_dir,
             flow_path=flow_path,
         )
-        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
+        raw_updates, assertions = self._run_hook(hook, context)
+        parsed = _validate_hook_return(AfterHookReturn, raw_updates, phase="after_hook")
 
-        updated = updates.get("response_hex", response_hex)
-        if updated is not None and not isinstance(updated, str):
-            raise TypeError("hook output response_hex must be str or None")
-
-        self._apply_variable_updates(variables, context_variables, updates)
+        updated = parsed.response_hex if parsed.response_hex is not None else response_hex
+        self._apply_variable_updates(variables, context_variables, parsed.variables)
         return updated, assertions
 
     def _apply_can_tx_hook(
         self,
-        script_path: str | None,
-        function_name: str | None,
-        snippet: str | None,
+        hook: HookConfig,
+        *,
         request_hex: str,
         response_hex: str | None,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
         flow_dir: Path,
         flow_path: Path | None,
-        *,
         message_index: int,
         message_total: int,
         step_name: str,
@@ -993,118 +1113,82 @@ class FlowEngine:
             skipped_response=skipped_response,
             addressing_mode=addressing_mode,
         )
-        updates, assertions = self._run_hook(script_path, function_name, snippet, context)
-        self._apply_variable_updates(variables, context_variables, updates)
-        return self._resolve_can_frame_dispatch_items(updates), assertions
+        raw_updates, assertions = self._run_hook(hook, context)
+        parsed = _validate_hook_return(CanTxHookReturn, raw_updates, phase="can_tx_hook")
+        self._apply_variable_updates(variables, context_variables, parsed.variables)
 
-    def _resolve_can_frame_dispatch_items(
-        self,
-        updates: dict[str, Any],
-    ) -> list[_CanFrameDispatchItem]:
-        raw_frames = updates.get("can_frames")
-        if raw_frames is None:
-            return []
-        if not isinstance(raw_frames, list):
-            raise TypeError("hook output can_frames must be list[dict]")
-
-        frames: list[_CanFrameDispatchItem] = []
-        for item in raw_frames:
-            if not isinstance(item, dict):
-                raise TypeError("hook output can_frames must be list[dict]")
-
-            arbitration_id = item.get("arbitration_id")
-            data_hex = item.get("data_hex")
-            is_extended_id = item.get("is_extended_id", False)
-
-            if not isinstance(arbitration_id, int):
-                raise TypeError("hook output can_frames[].arbitration_id must be int")
-            if not isinstance(data_hex, str):
-                raise TypeError("hook output can_frames[].data_hex must be str")
-            if not isinstance(is_extended_id, bool):
-                raise TypeError("hook output can_frames[].is_extended_id must be bool")
-
-            normalized_hex = _normalize_hex(data_hex, field_name="can_frames[].data_hex").upper()
-            frames.append(
-                _CanFrameDispatchItem(
-                    arbitration_id=arbitration_id,
-                    data_hex=normalized_hex,
-                    is_extended_id=is_extended_id,
-                )
+        frames = [
+            _CanFrameDispatchItem(
+                arbitration_id=frame.arbitration_id,
+                data_hex=_normalize_hex(
+                    frame.data_hex, field_name="can_frames[].data_hex"
+                ).upper(),
+                is_extended_id=frame.is_extended_id,
             )
-        return frames
+            for frame in parsed.can_frames
+        ]
+        return frames, assertions
 
     def _resolve_request_dispatch_items(
         self,
-        updates: dict[str, Any],
+        parsed: BeforeHookReturn | MessageHookReturn,
         *,
         default_request_hex: str,
         default_skipped_response: bool,
     ) -> list[_RequestDispatchItem]:
-        request_items = updates.get("request_items")
-        if request_items is not None:
-            if not isinstance(request_items, list) or not request_items:
-                raise TypeError("hook output request_items must be a non-empty list[dict]")
-            parsed_items: list[_RequestDispatchItem] = []
-            for item in request_items:
-                if not isinstance(item, dict):
-                    raise TypeError("hook output request_items must be a non-empty list[dict]")
-                request_hex = item.get("request_hex")
-                if not isinstance(request_hex, str):
-                    raise TypeError("hook output request_items[].request_hex must be str")
-                skipped_response = item.get("skipped_response", default_skipped_response)
-                if not isinstance(skipped_response, bool):
-                    raise TypeError("hook output request_items[].skipped_response must be bool")
-                parsed_items.append(
-                    _RequestDispatchItem(
-                        request_hex=request_hex,
-                        skipped_response=skipped_response,
-                    )
+        if parsed.request_items is not None:
+            if not parsed.request_items:
+                raise ValueError("hook output request_items must be non-empty")
+            return [
+                _RequestDispatchItem(
+                    request_hex=item.request_hex,
+                    skipped_response=(
+                        item.skipped_response
+                        if item.skipped_response is not None
+                        else default_skipped_response
+                    ),
                 )
-            return parsed_items
+                for item in parsed.request_items
+            ]
 
-        sequence = updates.get("request_sequence_hex")
-        if sequence is not None:
-            if not isinstance(sequence, list) or not sequence:
-                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
-            if not all(isinstance(item, str) for item in sequence):
-                raise TypeError("hook output request_sequence_hex must be a non-empty list[str]")
+        if parsed.request_sequence_hex is not None:
+            if not parsed.request_sequence_hex:
+                raise ValueError("hook output request_sequence_hex must be non-empty")
             return [
                 _RequestDispatchItem(
                     request_hex=request_hex,
                     skipped_response=default_skipped_response,
                 )
-                for request_hex in sequence
+                for request_hex in parsed.request_sequence_hex
             ]
 
-        updated = updates.get("request_hex", default_request_hex)
-        if not isinstance(updated, str):
-            raise TypeError("hook output request_hex must be str")
+        request_hex = (
+            parsed.request_hex if parsed.request_hex is not None else default_request_hex
+        )
         return [
             _RequestDispatchItem(
-                request_hex=updated,
+                request_hex=request_hex,
                 skipped_response=default_skipped_response,
             )
         ]
 
     def _run_hook(
         self,
-        script_path: str | None,
-        function_name: str | None,
-        snippet: str | None,
+        hook: HookConfig,
         context: dict[str, Any],
     ) -> tuple[dict[str, Any], list[_AssertionResult]]:
         updates: dict[str, Any] = {}
         assertions = _HookAssertions(context)
         hook_context = dict(context)
         hook_context["assertions"] = assertions
-        if script_path and function_name:
+        if hook.script and hook.function:
             updates = self._runtime.run_hook(
-                script_path=script_path,
-                function_name=function_name,
+                script_path=hook.script,
+                function_name=hook.function,
                 context=hook_context,
             )
-        elif snippet:
-            updates = self._runtime.run_snippet(code=snippet, context=hook_context)
+        elif hook.inline:
+            updates = self._runtime.run_snippet(code=hook.inline, context=hook_context)
         return updates, assertions.results
 
     def _build_hook_context(
@@ -1146,15 +1230,13 @@ class FlowEngine:
         self,
         variables: dict[str, Any],
         context_variables: dict[str, Any],
-        updates: dict[str, Any],
+        updated_variables: dict[str, Any] | None,
     ) -> None:
         original_variables = dict(variables)
-        updated_variables = updates.get("variables", context_variables)
-        if not isinstance(updated_variables, dict):
-            raise TypeError("hook output variables must be dict")
-        if updated_variables != original_variables:
+        effective = updated_variables if updated_variables is not None else context_variables
+        if effective != original_variables:
             variables.clear()
-            variables.update(updated_variables)
+            variables.update(effective)
 
     def _log_state(self, run: FlowRun) -> None:
         self._event_store.append(
@@ -1172,18 +1254,14 @@ class FlowEngine:
 
     def _build_step_request_sequence(
         self,
-        step: FlowStep,
+        step: UdsStep | TransferStep,
         variables: dict[str, Any],
         trace: list[dict[str, Any]],
         flow_dir: Path,
         flow_path: Path | None,
     ) -> list[str]:
-        if step.transfer_data is None:
-            if step.send is None:
-                raise ValueError(
-                    f"step {step.name}: send is required when transfer_data is not set"
-                )
-            return [step.send]
+        if isinstance(step, UdsStep):
+            return [step.request]
 
         cfg = step.transfer_data
         segments = list(cfg.segments)
@@ -1244,33 +1322,15 @@ class FlowEngine:
             "block_counter_start": cfg.block_counter_start,
             "request_prefix_hex": cfg.request_prefix_hex,
         }
-        updates, assertions = self._run_hook(
-            hook.script_path,
-            hook.function_name,
-            hook.snippet,
-            context,
-        )
+        raw_updates, assertions = self._run_hook(hook, context)
         if assertions:
             raise ValueError("segments_hook assertions are not supported; use step hooks")
-        self._apply_variable_updates(variables, context_variables, updates)
+        parsed = _validate_hook_return(SegmentsHookReturn, raw_updates, phase="segments_hook")
+        self._apply_variable_updates(variables, context_variables, parsed.variables)
 
-        raw_segments = updates.get("segments")
-        if raw_segments is None:
-            raise ValueError("segments_hook must return {'segments': [...]} in hook result")
-        if not isinstance(raw_segments, list):
-            raise TypeError("segments_hook result.segments must be list")
-
-        segments: list[TransferSegment] = []
-        for item in raw_segments:
-            if isinstance(item, TransferSegment):
-                segments.append(item)
-            elif isinstance(item, dict):
-                segments.append(TransferSegment.model_validate(item))
-            else:
-                raise TypeError("segments_hook result.segments items must be dict")
-        if not segments:
+        if not parsed.segments:
             raise ValueError("segments_hook result.segments must not be empty")
-        return segments
+        return list(parsed.segments)
 
     def _evaluate_step_assertions(
         self,
@@ -1609,28 +1669,43 @@ def _resolve_addressing_mode(
     step: FlowStep,
     flow: FlowDefinition,
 ) -> Literal["physical", "functional"]:
-    """Resolve the effective addressing mode for a step.
-
-    When the step's addressing_mode is "inherit", use the flow's
-    default_addressing_mode.  Otherwise use the step's own value.
-    """
     if step.addressing_mode != "inherit":
         return step.addressing_mode
     return flow.default_addressing_mode
 
 
-def _resolve_tester_present_addressing_mode(
+def _resolve_tester_present_mode(
     step: FlowStep,
     flow: FlowDefinition,
-) -> Literal["physical", "functional"]:
+) -> Literal["physical", "functional"] | None:
     """Resolve the effective TesterPresent addressing mode for a step.
 
-    TP addressing mode is controlled independently from the request
-    addressing mode (``step.addressing_mode`` / ``flow.default_addressing_mode``):
-    callers sometimes want requests sent functionally while TP stays physical,
-    or vice versa. When the step's ``tester_present_addressing_mode`` is
-    "inherit", fall back to the flow-level ``tester_present_addressing_mode``.
+    Returns None when TP should NOT run for this step. Returns "physical" or
+    "functional" when TP should run with that addressing.
+
+    - ``tester_present="off"`` → TP disabled for this step
+    - ``tester_present="physical"|"functional"`` → step overrides flow; use that mode
+    - ``tester_present="inherit"`` → follow flow's ``tester_present_policy``:
+        - "during_flow" → run with ``flow.tester_present_addressing_mode``
+        - "breakpoint_only" or "off" → None (only runs during breakpoint, handled separately)
     """
-    if step.tester_present_addressing_mode != "inherit":
-        return step.tester_present_addressing_mode
-    return flow.tester_present_addressing_mode
+    if step.tester_present == "off":
+        return None
+    if step.tester_present in ("physical", "functional"):
+        return step.tester_present
+    # inherit
+    if flow.tester_present_policy == "during_flow":
+        return flow.tester_present_addressing_mode
+    return None
+
+
+def _validate_hook_return(
+    model_cls: type,
+    raw: dict[str, Any],
+    *,
+    phase: str,
+) -> Any:
+    try:
+        return model_cls.model_validate(raw or {})
+    except ValidationError as exc:
+        raise ValueError(f"{phase} hook returned invalid payload: {exc}") from exc

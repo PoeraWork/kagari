@@ -104,8 +104,8 @@ def test_trace_search_basic() -> None:
     """
     engine, run_id = _run_flow_with_steps(
         [
-            {"name": "step_a", "send": "2711", "expect": {"response_prefix": "6711"}},
-            {"name": "step_b", "send": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
+            {"kind": "uds", "name": "step_a", "request": "2711", "expect": {"response_prefix": "6711"}},
+            {"kind": "uds", "name": "step_b", "request": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
         ]
     )
 
@@ -121,8 +121,8 @@ def test_trace_search_regex() -> None:
     """
     engine, run_id = _run_flow_with_steps(
         [
-            {"name": "step_a", "send": "2711", "expect": {"response_prefix": "6711"}},
-            {"name": "step_b", "send": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
+            {"kind": "uds", "name": "step_a", "request": "2711", "expect": {"response_prefix": "6711"}},
+            {"kind": "uds", "name": "step_b", "request": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
         ]
     )
 
@@ -139,8 +139,9 @@ def test_trace_search_limit() -> None:
     engine, run_id = _run_flow_with_steps(
         [
             {
+                "kind": "uds",
                 "name": "repeated",
-                "send": "2711",
+                "request": "2711",
                 "repeat": 5,
                 "expect": {"response_prefix": "6711"},
             },
@@ -158,7 +159,7 @@ def test_trace_search_no_match() -> None:
     """
     engine, run_id = _run_flow_with_steps(
         [
-            {"name": "step_a", "send": "2711", "expect": {"response_prefix": "6711"}},
+            {"kind": "uds", "name": "step_a", "request": "2711", "expect": {"response_prefix": "6711"}},
         ]
     )
 
@@ -184,7 +185,7 @@ def test_trace_search_invalid_regex() -> None:
     """
     engine, run_id = _run_flow_with_steps(
         [
-            {"name": "step_a", "send": "2711", "expect": {"response_prefix": "6711"}},
+            {"kind": "uds", "name": "step_a", "request": "2711", "expect": {"response_prefix": "6711"}},
         ]
     )
 
@@ -199,8 +200,8 @@ def test_trace_search_wildcard() -> None:
     """
     engine, run_id = _run_flow_with_steps(
         [
-            {"name": "step_a", "send": "2711", "expect": {"response_prefix": "6711"}},
-            {"name": "step_b", "send": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
+            {"kind": "uds", "name": "step_a", "request": "2711", "expect": {"response_prefix": "6711"}},
+            {"kind": "uds", "name": "step_b", "request": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
         ]
     )
 

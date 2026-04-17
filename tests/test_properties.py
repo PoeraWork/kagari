@@ -18,7 +18,14 @@ from pydantic import ValidationError
 
 from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine, FlowStatus, _resolve_addressing_mode
-from uds_mcp.flow.schema import FlowDefinition, FlowStep, dump_flow_yaml, load_flow_yaml
+from uds_mcp.flow.schema import (
+    FlowDefinition,
+    FlowStep,
+    SubflowStep,
+    UdsStep,
+    dump_flow_yaml,
+    load_flow_yaml,
+)
 from uds_mcp.logging.exporters.blf import BlfExporter
 from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind, LogEvent
@@ -52,63 +59,48 @@ def _count_non_none(*values: object) -> int:
 
 
 class TestMutualExclusivity:
-    """Exactly one of send / transfer_data / sub_flow must be non-empty.
+    """Step kind discriminator determines which source field is required.
 
     Also verifies that repeat must be >= 1.
     """
 
     @settings(max_examples=200)
     @given(
-        send=_send_st,
-        transfer_data=_transfer_data_st,
-        sub_flow=_sub_flow_st,
+        kind=st.sampled_from(["uds", "subflow"]),
         repeat=st.integers(min_value=-10, max_value=100),
     )
     def test_mutual_exclusivity(
         self,
-        send: str | None,
-        transfer_data: dict | None,
-        sub_flow: str | None,
+        kind: str,
         repeat: int,
     ) -> None:
-        """Feature: flow-subflow-repeat-logging, Property 1: send/transfer_data/sub_flow 互斥性
+        """Feature: flow-subflow-repeat-logging, Property 1: kind discriminator
 
-        For any combination of send/transfer_data/sub_flow values, exactly one
-        non-empty value must pass validation; all other combinations are rejected.
-        Additionally, repeat must be >= 1.
+        For each supported kind, a valid step must be constructable with the
+        kind's required field, and repeat must be >= 1.
 
         **Validates: Requirements 1.2, 1.5, 3.1**
         """
-        non_none_count = _count_non_none(send, transfer_data, sub_flow)
-        exactly_one = non_none_count == 1
         valid_repeat = repeat >= 1
 
         kwargs: dict = {
+            "kind": kind,
             "name": "test_step",
             "repeat": repeat,
         }
-        if send is not None:
-            kwargs["send"] = send
-        if transfer_data is not None:
-            kwargs["transfer_data"] = transfer_data
-        if sub_flow is not None:
-            kwargs["sub_flow"] = sub_flow
+        if kind == "uds":
+            kwargs["request"] = "1001"
+        elif kind == "subflow":
+            kwargs["subflow"] = "/flows/child.yaml"
 
-        if exactly_one and valid_repeat:
-            # Should succeed
-            step = FlowStep(**kwargs)
+        if valid_repeat:
+            flow = FlowDefinition(name="f", steps=[kwargs])
+            step = flow.steps[0]
             assert step.repeat == repeat
-            # Verify exactly one source is set
-            sources = [
-                step.send is not None,
-                step.transfer_data is not None,
-                step.sub_flow is not None,
-            ]
-            assert sum(sources) == 1
+            assert step.kind == kind
         else:
-            # Should fail validation
             with pytest.raises(ValidationError):
-                FlowStep(**kwargs)
+                FlowDefinition(name="f", steps=[kwargs])
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +114,7 @@ _step_addressing_mode_st = st.sampled_from(["physical", "functional", "inherit"]
 _flow_default_addressing_mode_st = st.sampled_from(["physical", "functional"])
 
 # Strategy for tester_present at step level
-_step_tester_present_st = st.sampled_from(["inherit", "on", "off"])
+_step_tester_present_st = st.sampled_from(["inherit", "off", "physical", "functional"])
 
 # Strategy for tester_present_policy at flow level
 _flow_tester_present_policy_st = st.sampled_from(["breakpoint_only", "during_flow", "off"])
@@ -152,10 +144,11 @@ _flow_name_st = st.from_regex(r"[a-z][a-z0-9_]{0,15}", fullmatch=True)
 
 @st.composite
 def _flow_step_send_st(draw: st.DrawFn) -> dict:
-    """Generate a valid send-type FlowStep as a dict."""
+    """Generate a valid uds-kind FlowStep as a dict."""
     return {
+        "kind": "uds",
         "name": draw(_step_name_st),
-        "send": draw(_hex_send_st),
+        "request": draw(_hex_send_st),
         "repeat": draw(_repeat_st),
         "addressing_mode": draw(_step_addressing_mode_st),
         "tester_present": draw(_step_tester_present_st),
@@ -175,8 +168,9 @@ def _flow_step_sub_flow_st(draw: st.DrawFn, base_dir: Path | None = None) -> dic
     else:
         sub_flow_path = str(Path("/flows") / f"{sub_name}.yaml")
     return {
+        "kind": "subflow",
         "name": draw(_step_name_st),
-        "sub_flow": sub_flow_path,
+        "subflow": sub_flow_path,
         "repeat": draw(_repeat_st),
         "addressing_mode": draw(_step_addressing_mode_st),
         "tester_present": draw(_step_tester_present_st),
@@ -261,19 +255,17 @@ class TestYamlSerializationRoundTrip:
                 assert loaded_step.tester_present == orig_step.tester_present
                 assert loaded_step.delay_ms == orig_step.delay_ms
 
-                if orig_step.send is not None:
-                    assert loaded_step.send == orig_step.send
-                    assert loaded_step.sub_flow is None
+                if orig_step.kind == "uds":
+                    assert loaded_step.request == orig_step.request
                     assert loaded_step.timeout_ms == orig_step.timeout_ms
-                elif orig_step.sub_flow is not None:
+                elif orig_step.kind == "subflow":
                     # sub_flow should be resolved back to absolute path
-                    assert loaded_step.sub_flow is not None
-                    assert Path(loaded_step.sub_flow).is_absolute()
+                    assert loaded_step.subflow is not None
+                    assert Path(loaded_step.subflow).is_absolute()
                     # The resolved absolute path should match the original
-                    assert str(Path(loaded_step.sub_flow).resolve()) == str(
-                        Path(orig_step.sub_flow).resolve()
+                    assert str(Path(loaded_step.subflow).resolve()) == str(
+                        Path(orig_step.subflow).resolve()
                     )
-                    assert loaded_step.send is None
 
 
 # ---------------------------------------------------------------------------
@@ -404,10 +396,11 @@ class TestSubFlowVariableSharing:
         sub_flow_yaml = (
             "name: sub_flow\n"
             "steps:\n"
-            "  - name: sub_step\n"
-            '    send: "1001"\n'
+            "  - kind: uds\n"
+            "    name: sub_step\n"
+            '    request: "1001"\n'
             "    after_hook:\n"
-            "      snippet: |\n"
+            "      inline: |\n"
         )
         for line in snippet_code.split("\n"):
             sub_flow_yaml += f"        {line}\n"
@@ -436,12 +429,14 @@ class TestSubFlowVariableSharing:
             parent_flow_yaml += "  {}\n"
         parent_flow_yaml += (
             "steps:\n"
-            "  - name: run_sub\n"
-            "    sub_flow: sub_flow.yaml\n"
-            "  - name: verify_step\n"
-            '    send: "10DEAD"\n'
+            "  - kind: subflow\n"
+            "    name: run_sub\n"
+            "    subflow: sub_flow.yaml\n"
+            "  - kind: uds\n"
+            "    name: verify_step\n"
+            '    request: "10DEAD"\n'
             "    before_hook:\n"
-            "      snippet: |\n"
+            "      inline: |\n"
         )
         for line in verify_snippet.split("\n"):
             parent_flow_yaml += f"        {line}\n"
@@ -511,8 +506,9 @@ class TestRepeatTraceCorrectness:
         flow_yaml = (
             "name: repeat_test_flow\n"
             "steps:\n"
-            f"  - name: {step_name}\n"
-            f'    send: "{send_hex}"\n'
+            f"  - kind: uds\n"
+            f"    name: {step_name}\n"
+            f'    request: "{send_hex}"\n'
             f"    repeat: {repeat_n}\n"
         )
         flow_path = tmp_path / "flow.yaml"
@@ -648,8 +644,9 @@ class TestRepeatFailFastExit:
         flow_yaml = (
             "name: repeat_fail_flow\n"
             "steps:\n"
-            f"  - name: {step_name}\n"
-            f'    send: "{send_hex}"\n'
+            f"  - kind: uds\n"
+            f"    name: {step_name}\n"
+            f'    request: "{send_hex}"\n'
             f"    repeat: {repeat_n}\n"
             "    expect:\n"
             '      response_prefix: "50"\n'
@@ -738,8 +735,9 @@ class TestSubFlowTraceDepth:
         deepest_yaml = (
             f"name: {deepest_name}\n"
             "steps:\n"
-            f"  - name: step_at_depth_{nesting_depth}\n"
-            '    send: "1001"\n'
+            "  - kind: uds\n"
+            f"    name: step_at_depth_{nesting_depth}\n"
+            '    request: "1001"\n'
         )
         deepest_path.write_text(deepest_yaml, encoding="utf-8")
 
@@ -751,10 +749,12 @@ class TestSubFlowTraceDepth:
             level_yaml = (
                 f"name: {level_name}\n"
                 "steps:\n"
-                f"  - name: step_at_depth_{depth}\n"
-                '    send: "1001"\n'
-                f"  - name: call_depth_{depth + 1}\n"
-                f"    sub_flow: {child_filename}\n"
+                "  - kind: uds\n"
+                f"    name: step_at_depth_{depth}\n"
+                '    request: "1001"\n'
+                "  - kind: subflow\n"
+                f"    name: call_depth_{depth + 1}\n"
+                f"    subflow: {child_filename}\n"
             )
             level_path.write_text(level_yaml, encoding="utf-8")
             child_filename = f"{level_name}.yaml"
@@ -764,10 +764,12 @@ class TestSubFlowTraceDepth:
         parent_yaml = (
             "name: parent_flow\n"
             "steps:\n"
-            "  - name: step_at_depth_0\n"
-            '    send: "1001"\n'
-            "  - name: call_depth_1\n"
-            f"    sub_flow: {child_filename}\n"
+            "  - kind: uds\n"
+            "    name: step_at_depth_0\n"
+            '    request: "1001"\n'
+            "  - kind: subflow\n"
+            "    name: call_depth_1\n"
+            f"    subflow: {child_filename}\n"
         )
         parent_path.write_text(parent_yaml, encoding="utf-8")
 
@@ -859,8 +861,9 @@ class TestSubFlowFailurePropagation:
         sub_flow_yaml = "name: child_flow\nsteps:\n"
         for i in range(num_sub_steps):
             sub_flow_yaml += (
-                f"  - name: sub_step_{i}\n"
-                '    send: "1003"\n'
+                "  - kind: uds\n"
+                f"    name: sub_step_{i}\n"
+                '    request: "1003"\n'
                 "    expect:\n"
                 '      response_prefix: "50"\n'
             )
@@ -872,10 +875,12 @@ class TestSubFlowFailurePropagation:
         parent_flow_yaml = (
             "name: parent_flow\n"
             "steps:\n"
-            "  - name: run_child\n"
-            "    sub_flow: child_flow.yaml\n"
-            f"  - name: {after_step_name}\n"
-            '    send: "1001"\n'
+            "  - kind: subflow\n"
+            "    name: run_child\n"
+            "    subflow: child_flow.yaml\n"
+            "  - kind: uds\n"
+            f"    name: {after_step_name}\n"
+            '    request: "1001"\n'
         )
         parent_flow_path = tmp_path / "parent_flow.yaml"
         parent_flow_path.write_text(parent_flow_yaml, encoding="utf-8")
@@ -957,7 +962,7 @@ class TestAddressingModeResolution:
 
         **Validates: Requirements 9.3, 9.4, 9.7**
         """
-        step = FlowStep(name="test_step", send="1001", addressing_mode=step_mode)
+        step = UdsStep(name="test_step", request="1001", addressing_mode=step_mode)
         flow = FlowDefinition(
             name="test_flow",
             steps=[step],
@@ -992,7 +997,7 @@ class TestAddressingModeResolution:
         **Validates: Requirements 9.3, 9.4, 9.7**
         """
         # Step with default addressing_mode ("inherit")
-        step = FlowStep(name="default_step", send="1001")
+        step = UdsStep(name="default_step", request="1001")
         assert step.addressing_mode == "inherit"
 
         # Flow with explicit default
@@ -1057,8 +1062,9 @@ class TestSubFlowAddressingModeInheritance:
             "name: child_flow\n"
             f"default_addressing_mode: {sub_flow_default}\n"
             "steps:\n"
-            "  - name: child_step\n"
-            '    send: "1001"\n'
+            "  - kind: uds\n"
+            "    name: child_step\n"
+            '    request: "1001"\n'
             "    addressing_mode: inherit\n"
         )
         sub_flow_path = tmp_path / "child_flow.yaml"
@@ -1069,11 +1075,13 @@ class TestSubFlowAddressingModeInheritance:
             "name: parent_flow\n"
             f"default_addressing_mode: {parent_default}\n"
             "steps:\n"
-            "  - name: parent_step\n"
-            '    send: "1001"\n'
+            "  - kind: uds\n"
+            "    name: parent_step\n"
+            '    request: "1001"\n'
             "    addressing_mode: inherit\n"
-            "  - name: call_child\n"
-            "    sub_flow: child_flow.yaml\n"
+            "  - kind: subflow\n"
+            "    name: call_child\n"
+            "    subflow: child_flow.yaml\n"
         )
         parent_flow_path = tmp_path / "parent_flow.yaml"
         parent_flow_path.write_text(parent_flow_yaml, encoding="utf-8")
@@ -1131,8 +1139,9 @@ class TestSubFlowAddressingModeInheritance:
         sub_flow_yaml = (
             "name: child_flow\n"
             "steps:\n"
-            "  - name: child_step\n"
-            '    send: "1001"\n'
+            "  - kind: uds\n"
+            "    name: child_step\n"
+            '    request: "1001"\n'
             "    addressing_mode: inherit\n"
         )
         sub_flow_path = tmp_path / "child_flow.yaml"
@@ -1143,8 +1152,9 @@ class TestSubFlowAddressingModeInheritance:
             "name: parent_flow\n"
             f"default_addressing_mode: {parent_default}\n"
             "steps:\n"
-            "  - name: call_child\n"
-            "    sub_flow: child_flow.yaml\n"
+            "  - kind: subflow\n"
+            "    name: call_child\n"
+            "    subflow: child_flow.yaml\n"
         )
         parent_flow_path = tmp_path / "parent_flow.yaml"
         parent_flow_path.write_text(parent_flow_yaml, encoding="utf-8")
@@ -1473,7 +1483,7 @@ class TestFlowStatusSimplifiedReturn:
         # Build a flow with num_steps steps, each sending "1003"
         flow_yaml = "name: status_test_flow\nsteps:\n"
         for i in range(num_steps):
-            flow_yaml += f'  - name: step_{i}\n    send: "1003"\n'
+            flow_yaml += f'  - kind: uds\n    name: step_{i}\n    request: "1003"\n'
             if should_fail:
                 # Add expect so the negative response triggers failure
                 flow_yaml += '    expect:\n      response_prefix: "50"\n'
@@ -1565,7 +1575,7 @@ class TestFlowTraceSearchCorrectness:
         # Build a flow with num_steps unique steps
         flow_yaml = "name: search_test_flow\nsteps:\n"
         for i in range(num_steps):
-            flow_yaml += f'  - name: search_step_{i}\n    send: "1003"\n'
+            flow_yaml += f'  - kind: uds\n    name: search_step_{i}\n    request: "1003"\n'
         flow_path = tmp_path / "flow.yaml"
         flow_path.write_text(flow_yaml, encoding="utf-8")
 
@@ -1617,7 +1627,7 @@ class TestFlowTraceSearchCorrectness:
         # Build a flow with num_steps unique steps
         flow_yaml = "name: search_specific_flow\nsteps:\n"
         for i in range(num_steps):
-            flow_yaml += f'  - name: search_step_{i}\n    send: "1003"\n'
+            flow_yaml += f'  - kind: uds\n    name: search_step_{i}\n    request: "1003"\n'
         flow_path = tmp_path / "flow.yaml"
         flow_path.write_text(flow_yaml, encoding="utf-8")
 
@@ -1681,7 +1691,7 @@ class TestFlowTraceSearchLimit:
         # Build a flow with num_steps steps
         flow_yaml = "name: limit_test_flow\nsteps:\n"
         for i in range(num_steps):
-            flow_yaml += f'  - name: limit_step_{i}\n    send: "1003"\n'
+            flow_yaml += f'  - kind: uds\n    name: limit_step_{i}\n    request: "1003"\n'
         flow_path = tmp_path / "flow.yaml"
         flow_path.write_text(flow_yaml, encoding="utf-8")
 
@@ -1764,15 +1774,15 @@ class TestInlineRegistrationSubFlowPathValidation:
         flow = FlowDefinition.model_validate(
             {
                 "name": "test_flow",
-                "steps": [{"name": "sub_step", "sub_flow": relative_path}],
+                "steps": [{"kind": "subflow", "name": "sub_step", "subflow": relative_path}],
             }
         )
-        with pytest.raises(ValueError, match="sub_flow path must be absolute"):
+        with pytest.raises(ValueError, match="subflow path must be absolute"):
             for step in flow.steps:
-                if step.sub_flow is not None and not Path(step.sub_flow).is_absolute():
+                if step.subflow is not None and not Path(step.subflow).is_absolute():
                     raise ValueError(
-                        f"sub_flow path must be absolute when using "
-                        f"flow_register_inline: {step.sub_flow}"
+                        f"subflow path must be absolute when using "
+                        f"flow_register_inline: {step.subflow}"
                     )
 
     @settings(max_examples=100)
@@ -1793,13 +1803,13 @@ class TestInlineRegistrationSubFlowPathValidation:
         flow = FlowDefinition.model_validate(
             {
                 "name": "test_flow",
-                "steps": [{"name": "sub_step", "sub_flow": absolute_path}],
+                "steps": [{"kind": "subflow", "name": "sub_step", "subflow": absolute_path}],
             }
         )
         # Should NOT raise - absolute paths are accepted
         for step in flow.steps:
-            if step.sub_flow is not None and not Path(step.sub_flow).is_absolute():
+            if step.subflow is not None and not Path(step.subflow).is_absolute():
                 raise ValueError(
-                    f"sub_flow path must be absolute when using "
-                    f"flow_register_inline: {step.sub_flow}"
+                    f"subflow path must be absolute when using "
+                    f"flow_register_inline: {step.subflow}"
                 )

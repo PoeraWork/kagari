@@ -87,7 +87,7 @@ def test_status_done_has_required_keys() -> None:
         engine = _make_engine()
         flow = FlowDefinition(
             name="simple_flow",
-            steps=[{"name": "step1", "send": "2711", "expect": {"response_prefix": "6711"}}],
+            steps=[{"kind": "uds", "name": "step1", "request": "2711", "expect": {"response_prefix": "6711"}}],
         )
         engine.register(flow)
         run_id = await engine.start("simple_flow")
@@ -117,7 +117,7 @@ def test_status_done_no_trace_key() -> None:
         engine = _make_engine()
         flow = FlowDefinition(
             name="simple_flow",
-            steps=[{"name": "step1", "send": "2711", "expect": {"response_prefix": "6711"}}],
+            steps=[{"kind": "uds", "name": "step1", "request": "2711", "expect": {"response_prefix": "6711"}}],
         )
         engine.register(flow)
         run_id = await engine.start("simple_flow")
@@ -138,7 +138,7 @@ def test_status_done_no_failed_step_trace() -> None:
         engine = _make_engine()
         flow = FlowDefinition(
             name="simple_flow",
-            steps=[{"name": "step1", "send": "2711", "expect": {"response_prefix": "6711"}}],
+            steps=[{"kind": "uds", "name": "step1", "request": "2711", "expect": {"response_prefix": "6711"}}],
         )
         engine.register(flow)
         run_id = await engine.start("simple_flow")
@@ -160,7 +160,7 @@ def test_status_failed_has_failed_step_trace() -> None:
         engine = _make_engine()
         flow = FlowDefinition(
             name="fail_flow",
-            steps=[{"name": "will_fail", "send": "2711", "expect": {"response_prefix": "FFFF"}}],
+            steps=[{"kind": "uds", "name": "will_fail", "request": "2711", "expect": {"response_prefix": "FFFF"}}],
         )
         engine.register(flow)
         run_id = await engine.start("fail_flow")
@@ -188,12 +188,13 @@ def test_status_failed_step_trace_max_50() -> None:
             name="many_trace_flow",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "repeated",
-                    "send": "2711",
+                    "request": "2711",
                     "repeat": 60,
                     "expect": {"response_prefix": "6711"},
                 },
-                {"name": "will_fail", "send": "2711", "expect": {"response_prefix": "FFFF"}},
+                {"kind": "uds", "name": "will_fail", "request": "2711", "expect": {"response_prefix": "FFFF"}},
             ],
         )
         engine.register(flow)
@@ -217,11 +218,12 @@ def test_status_step_count_counts_unique_steps() -> None:
         flow = FlowDefinition(
             name="multi_step_flow",
             steps=[
-                {"name": "step_a", "send": "2711", "expect": {"response_prefix": "6711"}},
-                {"name": "step_b", "send": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
+                {"kind": "uds", "name": "step_a", "request": "2711", "expect": {"response_prefix": "6711"}},
+                {"kind": "uds", "name": "step_b", "request": "22ABCD", "expect": {"response_prefix": "62ABCD"}},
                 {
+                    "kind": "uds",
                     "name": "step_a_again",
-                    "send": "2711",
+                    "request": "2711",
                     "repeat": 2,
                     "expect": {"response_prefix": "6711"},
                 },
@@ -249,10 +251,11 @@ def test_status_message_count_equals_trace_length() -> None:
         flow = FlowDefinition(
             name="count_flow",
             steps=[
-                {"name": "step_a", "send": "2711", "expect": {"response_prefix": "6711"}},
+                {"kind": "uds", "name": "step_a", "request": "2711", "expect": {"response_prefix": "6711"}},
                 {
+                    "kind": "uds",
                     "name": "step_b",
-                    "send": "2711",
+                    "request": "2711",
                     "repeat": 3,
                     "expect": {"response_prefix": "6711"},
                 },

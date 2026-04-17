@@ -114,15 +114,17 @@ def test_before_hook_can_read_previous_response_and_write_variables() -> None:
             variables={},
             steps=[
                 {
+                    "kind": "uds",
                     "name": "request_seed",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
                 {
+                    "kind": "uds",
                     "name": "send_key",
-                    "send": "2712FFFF",
+                    "request": "2712FFFF",
                     "before_hook": {
-                        "snippet": (
+                        "inline": (
                             'seed = context["response_hex"][4:]\n'
                             'result = {"request_hex": "2712" + seed, "variables": {"seed": seed}}'
                         )
@@ -130,10 +132,11 @@ def test_before_hook_can_read_previous_response_and_write_variables() -> None:
                     "expect": {"response_prefix": "6712"},
                 },
                 {
+                    "kind": "uds",
                     "name": "reuse_seed_variable",
-                    "send": "22F190",
+                    "request": "22F190",
                     "before_hook": {
-                        "snippet": 'result = {"request_hex": "22" + context["variables"]["seed"]}'
+                        "inline": 'result = {"request_hex": "22" + context["variables"]["seed"]}'
                     },
                     "expect": {"response_prefix": "62ABCD"},
                 },
@@ -163,8 +166,9 @@ def test_flow_level_repeat_replays_whole_flow() -> None:
             repeat=3,
             steps=[
                 {
+                    "kind": "uds",
                     "name": "request_seed",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 }
             ],
@@ -193,13 +197,15 @@ def test_tester_present_policy_during_flow_with_step_off() -> None:
             tester_present_policy="during_flow",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "normal_step",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
                 {
+                    "kind": "uds",
                     "name": "tp_off_step",
-                    "send": "2711",
+                    "request": "2711",
                     "tester_present": "off",
                     "expect": {"response_prefix": "6711"},
                 },
@@ -232,9 +238,10 @@ def test_tester_present_step_on_when_policy_off() -> None:
             tester_present_policy="off",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "tp_on_step",
-                    "send": "2711",
-                    "tester_present": "on",
+                    "request": "2711",
+                    "tester_present": "physical",
                     "expect": {"response_prefix": "6711"},
                 }
             ],
@@ -263,21 +270,23 @@ def test_before_hook_trace_and_after_hook_variable_writeback() -> None:
             variables={},
             steps=[
                 {
+                    "kind": "uds",
                     "name": "request_seed",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
                 {
+                    "kind": "uds",
                     "name": "read_via_trace",
-                    "send": "22F190",
+                    "request": "22F190",
                     "before_hook": {
-                        "snippet": (
+                        "inline": (
                             'seed = context["trace"][-1]["response_hex"][4:]\n'
                             'result = {"request_hex": "22" + seed}'
                         )
                     },
                     "after_hook": {
-                        "snippet": (
+                        "inline": (
                             'variables = dict(context["variables"])\n'
                             'variables["did"] = context["response_hex"][2:6]\n'
                             'result = {"variables": variables}'
@@ -286,10 +295,11 @@ def test_before_hook_trace_and_after_hook_variable_writeback() -> None:
                     "expect": {"response_prefix": "62ABCD"},
                 },
                 {
+                    "kind": "uds",
                     "name": "reuse_after_hook_variable",
-                    "send": "22F190",
+                    "request": "22F190",
                     "before_hook": {
-                        "snippet": 'result = {"request_hex": "22" + context["variables"]["did"]}'
+                        "inline": 'result = {"request_hex": "22" + context["variables"]["did"]}'
                     },
                     "expect": {"response_prefix": "62ABCD"},
                 },
@@ -317,15 +327,17 @@ def test_before_hook_can_resend_nth_transfer_data_block() -> None:
             name="transfer_data_resend",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "block1",
-                    "send": "3601AA",
+                    "request": "3601AA",
                     "expect": {"response_prefix": "76"},
                 },
                 {
+                    "kind": "uds",
                     "name": "block2_resend_once",
-                    "send": "3602BB",
+                    "request": "3602BB",
                     "before_hook": {
-                        "snippet": (
+                        "inline": (
                             'count = len([t for t in context["trace"] if t["request_hex"].startswith("36")]) + 1\n'
                             'req = context["request_hex"]\n'
                             "if count == 2:\n"
@@ -337,10 +349,11 @@ def test_before_hook_can_resend_nth_transfer_data_block() -> None:
                     "expect": {"response_prefix": "76"},
                 },
                 {
+                    "kind": "uds",
                     "name": "block3_mutate",
-                    "send": "3603CC",
+                    "request": "3603CC",
                     "before_hook": {
-                        "snippet": (
+                        "inline": (
                             'count = len([t for t in context["trace"] if t["request_hex"].startswith("36")]) + 1\n'
                             "if count == 4:\n"
                             '    result = {"request_hex": "36FFDD"}\n'
@@ -374,6 +387,7 @@ def test_transfer_data_builtin_with_message_hook_can_mutate_nth_block() -> None:
             name="transfer_data_builtin",
             steps=[
                 {
+                    "kind": "transfer",
                     "name": "transfer_payload",
                     "transfer_data": {
                         "segments": [
@@ -384,7 +398,7 @@ def test_transfer_data_builtin_with_message_hook_can_mutate_nth_block() -> None:
                         "block_counter_start": 1,
                     },
                     "message_hook": {
-                        "snippet": (
+                        "inline": (
                             'if context["message_index"] == 2:\n'
                             '    result = {"request_hex": "3603EE"}\n'
                             "else:\n"
@@ -418,10 +432,11 @@ def test_transfer_data_segments_hook_can_generate_segments() -> None:
             variables={"payload": "AABBCC"},
             steps=[
                 {
+                    "kind": "transfer",
                     "name": "transfer_from_hook",
                     "transfer_data": {
                         "segments_hook": {
-                            "snippet": (
+                            "inline": (
                                 'p = context["variables"]["payload"]\n'
                                 'result = {"segments": [{"address": 0x1000, "data_hex": p}]}'
                             )
@@ -455,14 +470,16 @@ def test_step_delay_is_non_blocking() -> None:
             name="step_delay_flow",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "enter_programming_session",
-                    "send": "2711",
+                    "request": "2711",
                     "delay_ms": 150,
                     "expect": {"response_prefix": "6711"},
                 },
                 {
+                    "kind": "uds",
                     "name": "read_after_delay",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "expect": {"response_prefix": "62ABCD"},
                 },
             ],
@@ -509,14 +526,16 @@ def test_stop_requested_during_step_delay_stops_before_next_step() -> None:
             name="step_delay_stop_flow",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "enter_programming_session",
-                    "send": "2711",
+                    "request": "2711",
                     "delay_ms": 200,
                     "expect": {"response_prefix": "6711"},
                 },
                 {
+                    "kind": "uds",
                     "name": "read_after_delay",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "expect": {"response_prefix": "62ABCD"},
                 },
             ],
@@ -544,13 +563,15 @@ def test_wait_only_step_runs_and_records_trace() -> None:
             name="wait_only_flow",
             steps=[
                 {
+                    "kind": "wait",
                     "name": "wait_boot",
                     "delay_ms": 120,
-                    "tester_present": "on",
+                    "tester_present": "physical",
                 },
                 {
+                    "kind": "uds",
                     "name": "read_after_wait",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "expect": {"response_prefix": "62ABCD"},
                 },
             ],
@@ -586,11 +607,10 @@ def test_tester_present_step_on_uses_step_addressing_mode_and_suspends_flow_owne
             default_addressing_mode="physical",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "functional_tp_step",
-                    "send": "2711",
-                    "tester_present": "on",
-                    # Request mode stays physical; only TP goes functional.
-                    "tester_present_addressing_mode": "functional",
+                    "request": "2711",
+                    "tester_present": "functional",
                     "expect": {"response_prefix": "6711"},
                 },
             ],
@@ -631,8 +651,9 @@ def test_tester_present_flow_default_addressing_mode_functional() -> None:
             default_addressing_mode="physical",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "step1",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 }
             ],
@@ -664,8 +685,9 @@ def test_tester_present_addressing_mode_independent_from_request_mode() -> None:
             default_addressing_mode="functional",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "step1",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 }
             ],
@@ -692,13 +714,15 @@ def test_wait_only_step_tester_present_off_suspends_flow_owner() -> None:
             tester_present_policy="during_flow",
             steps=[
                 {
+                    "kind": "wait",
                     "name": "wait_without_tp",
                     "delay_ms": 80,
                     "tester_present": "off",
                 },
                 {
+                    "kind": "uds",
                     "name": "normal_step",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
             ],
@@ -728,6 +752,7 @@ def test_transfer_data_fails_fast_on_unexpected_response_by_default() -> None:
             name="transfer_data_fail_fast",
             steps=[
                 {
+                    "kind": "transfer",
                     "name": "transfer_payload",
                     "transfer_data": {
                         "segments": [{"address": 0x1000, "data_hex": "AABBCC"}],
@@ -735,7 +760,7 @@ def test_transfer_data_fails_fast_on_unexpected_response_by_default() -> None:
                         "block_counter_start": 1,
                     },
                     "message_hook": {
-                        "snippet": (
+                        "inline": (
                             'if context["message_index"] == 1:\n'
                             '    result = {"request_hex": "3602BAD0"}\n'
                             "else:\n"
@@ -767,6 +792,7 @@ def test_transfer_data_can_disable_per_message_check_for_negative_hook_logic() -
             name="transfer_data_negative_by_hook",
             steps=[
                 {
+                    "kind": "transfer",
                     "name": "transfer_payload",
                     "transfer_data": {
                         "segments": [{"address": 0x1000, "data_hex": "AABBCC"}],
@@ -775,7 +801,7 @@ def test_transfer_data_can_disable_per_message_check_for_negative_hook_logic() -
                         "check_each_response": False,
                     },
                     "message_hook": {
-                        "snippet": (
+                        "inline": (
                             'if context["message_index"] == 1:\n'
                             '    result = {"request_hex": "3602BAD0"}\n'
                             "else:\n"
@@ -783,7 +809,7 @@ def test_transfer_data_can_disable_per_message_check_for_negative_hook_logic() -
                         )
                     },
                     "after_hook": {
-                        "snippet": (
+                        "inline": (
                             'curr = list(context["trace"])\n'
                             'seen_negative = any(t["response_hex"].startswith("7F") for t in curr)\n'
                             "if not seen_negative:\n"
@@ -818,6 +844,7 @@ def test_transfer_data_message_hook_request_items_can_skip_per_message_response(
             name="transfer_data_skip_single_block_response",
             steps=[
                 {
+                    "kind": "transfer",
                     "name": "transfer_payload",
                     "transfer_data": {
                         "segments": [{"address": 0x1000, "data_hex": "AABB"}],
@@ -826,7 +853,7 @@ def test_transfer_data_message_hook_request_items_can_skip_per_message_response(
                         "check_each_response": False,
                     },
                     "message_hook": {
-                        "snippet": (
+                        "inline": (
                             'if context["message_index"] == 1:\n'
                             '    result = {"request_items": [{"request_hex": context["request_hex"], "skipped_response": True}]}\n'
                             "else:\n"
@@ -835,8 +862,9 @@ def test_transfer_data_message_hook_request_items_can_skip_per_message_response(
                     },
                 },
                 {
+                    "kind": "uds",
                     "name": "transfer_exit",
-                    "send": "37",
+                    "request": "37",
                     "expect": {"response_prefix": "77"},
                 },
             ],
@@ -867,6 +895,7 @@ def test_can_tx_hook_sends_frames_for_each_message_with_skip_aware_timing() -> N
             name="can_tx_hook_per_message",
             steps=[
                 {
+                    "kind": "transfer",
                     "name": "transfer_payload",
                     "transfer_data": {
                         "segments": [{"address": 0x1000, "data_hex": "AABB"}],
@@ -875,7 +904,7 @@ def test_can_tx_hook_sends_frames_for_each_message_with_skip_aware_timing() -> N
                         "check_each_response": False,
                     },
                     "message_hook": {
-                        "snippet": (
+                        "inline": (
                             'if context["message_index"] == 1:\n'
                             '    result = {"request_items": [{"request_hex": context["request_hex"], "skipped_response": True}]}\n'
                             "else:\n"
@@ -883,7 +912,7 @@ def test_can_tx_hook_sends_frames_for_each_message_with_skip_aware_timing() -> N
                         )
                     },
                     "can_tx_hook": {
-                        "snippet": (
+                        "inline": (
                             'if context["skipped_response"]:\n'
                             '    result = {"can_frames": [{"arbitration_id": 0x701, "data_hex": "ABCD"}]}\n'
                             "else:\n"
@@ -924,8 +953,9 @@ def test_expect_response_regex_matches() -> None:
             name="expect_response_regex_ok",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "read_did",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "expect": {
                         "response_regex": r"^62ABCD[0-9A-F]{2}$",
                     },
@@ -952,16 +982,18 @@ def test_expect_response_regex_record_mode_keeps_flow_running() -> None:
             name="expect_response_regex_record",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "read_did",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "expect": {
                         "response_regex": r"^67.*$",
                         "response_on_fail": "record",
                     },
                 },
                 {
+                    "kind": "uds",
                     "name": "next_step",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
             ],
@@ -1003,19 +1035,21 @@ def test_flow_variables_path_keys_resolve_relative_to_yaml_dir(tmp_path: Path) -
                     "variables:",
                     '  sbl_s19_path: "../data/sbl.s19"',
                     "steps:",
-                    "  - name: request_seed",
-                    '    send: "2711"',
+                    "  - kind: uds",
+                    "    name: request_seed",
+                    '    request: "2711"',
                     "    before_hook:",
-                    "      snippet: |",
+                    "      inline: |",
                     '        v = dict(context["variables"])',
                     '        v["resolved_path"] = v["sbl_s19_path"]',
                     '        result = {"variables": v}',
                     "    expect:",
                     '      response_prefix: "6711"',
-                    "  - name: check_abs_path",
-                    '    send: "2711"',
+                    "  - kind: uds",
+                    "    name: check_abs_path",
+                    '    request: "2711"',
                     "    before_hook:",
-                    "      snippet: |",
+                    "      inline: |",
                     "        import os",
                     '        req = "22ABCD" if os.path.isabs(context["variables"]["resolved_path"]) else "2711"',
                     '        result = {"request_hex": req}',
@@ -1048,8 +1082,9 @@ def test_expect_assertion_record_mode_keeps_flow_running() -> None:
             name="expect_record_mode",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "read_did",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "expect": {
                         "assertions": [
                             {
@@ -1092,8 +1127,9 @@ def test_expect_assertion_fatal_mode_stops_flow() -> None:
             name="expect_fatal_mode",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "read_did",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "expect": {
                         "assertions": [
                             {
@@ -1108,8 +1144,9 @@ def test_expect_assertion_fatal_mode_stops_flow() -> None:
                     },
                 },
                 {
+                    "kind": "uds",
                     "name": "next_step_should_not_run",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
             ],
@@ -1137,10 +1174,11 @@ def test_after_hook_assertions_support_multiple_checks() -> None:
             name="hook_multi_assertions",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "read_did",
-                    "send": "22ABCD",
+                    "request": "22ABCD",
                     "after_hook": {
-                        "snippet": (
+                        "inline": (
                             'assertions.response_byte_eq(0, 0x62, name="sid_ok", on_fail="fatal")\n'
                             "assertions.response_bytes_int_range(\n"
                             "    1,\n"
@@ -1206,14 +1244,14 @@ def test_basic_sub_flow_execution(tmp_path: Path) -> None:
         _write_sub_flow_yaml(
             sub_flow_path,
             "child_flow",
-            '  - name: child_step\n    send: "2711"\n    expect:\n      response_prefix: "6711"\n',
+            '  - kind: uds\n    name: child_step\n    request: "2711"\n    expect:\n      response_prefix: "6711"\n',
         )
 
         flow = FlowDefinition(
             name="parent_flow",
             steps=[
-                {"name": "parent_step", "send": "2711", "expect": {"response_prefix": "6711"}},
-                {"name": "call_child", "sub_flow": str(sub_flow_path)},
+                {"kind": "uds", "name": "parent_step", "request": "2711", "expect": {"response_prefix": "6711"}},
+                {"kind": "subflow", "name": "call_child", "subflow": str(sub_flow_path)},
             ],
         )
         engine.register(flow)
@@ -1244,23 +1282,23 @@ def test_nested_sub_flow_execution_two_levels(tmp_path: Path) -> None:
         _write_sub_flow_yaml(
             grandchild_path,
             "grandchild_flow",
-            '  - name: grandchild_step\n    send: "2711"\n    expect:\n      response_prefix: "6711"\n',
+            '  - kind: uds\n    name: grandchild_step\n    request: "2711"\n    expect:\n      response_prefix: "6711"\n',
         )
 
         child_path = tmp_path / "child.yaml"
         gc_posix = grandchild_path.as_posix()
         child_path.write_text(
             f"name: child_flow\nsteps:\n"
-            f'  - name: child_step\n    send: "2711"\n    expect:\n      response_prefix: "6711"\n'
-            f"  - name: call_grandchild\n    sub_flow: {gc_posix}\n",
+            f'  - kind: uds\n    name: child_step\n    request: "2711"\n    expect:\n      response_prefix: "6711"\n'
+            f"  - kind: subflow\n    name: call_grandchild\n    subflow: {gc_posix}\n",
             encoding="utf-8",
         )
 
         flow = FlowDefinition(
             name="parent_flow",
             steps=[
-                {"name": "parent_step", "send": "2711", "expect": {"response_prefix": "6711"}},
-                {"name": "call_child", "sub_flow": str(child_path)},
+                {"kind": "uds", "name": "parent_step", "request": "2711", "expect": {"response_prefix": "6711"}},
+                {"kind": "subflow", "name": "call_child", "subflow": str(child_path)},
             ],
         )
         engine.register(flow)
@@ -1292,10 +1330,11 @@ def test_sub_flow_variable_sharing(tmp_path: Path) -> None:
         child_path.write_text(
             "name: child_flow\n"
             "steps:\n"
-            "  - name: child_step\n"
-            '    send: "2711"\n'
+            "  - kind: uds\n"
+            "    name: child_step\n"
+            '    request: "2711"\n'
             "    after_hook:\n"
-            "      snippet: |\n"
+            "      inline: |\n"
             '        variables = dict(context["variables"])\n'
             '        variables["from_child"] = "hello"\n'
             '        result = {"variables": variables}\n'
@@ -1308,12 +1347,13 @@ def test_sub_flow_variable_sharing(tmp_path: Path) -> None:
             name="parent_flow",
             variables={"parent_var": "world"},
             steps=[
-                {"name": "call_child", "sub_flow": str(child_path)},
+                {"kind": "subflow", "name": "call_child", "subflow": str(child_path)},
                 {
+                    "kind": "uds",
                     "name": "use_child_var",
-                    "send": "2711",
+                    "request": "2711",
                     "before_hook": {
-                        "snippet": (
+                        "inline": (
                             'v = context["variables"]\n'
                             'req = "22ABCD" if v.get("from_child") == "hello" else "2711"\n'
                             'result = {"request_hex": req}'
@@ -1348,15 +1388,15 @@ def test_sub_flow_failure_propagation(tmp_path: Path) -> None:
         _write_sub_flow_yaml(
             child_path,
             "child_flow",
-            '  - name: child_ok\n    send: "2711"\n    expect:\n      response_prefix: "6711"\n'
-            '  - name: child_fail\n    send: "2711"\n    expect:\n      response_prefix: "FFFF"\n',
+            '  - kind: uds\n    name: child_ok\n    request: "2711"\n    expect:\n      response_prefix: "6711"\n'
+            '  - kind: uds\n    name: child_fail\n    request: "2711"\n    expect:\n      response_prefix: "FFFF"\n',
         )
 
         flow = FlowDefinition(
             name="parent_flow",
             steps=[
-                {"name": "call_child", "sub_flow": str(child_path)},
-                {"name": "should_not_run", "send": "2711", "expect": {"response_prefix": "6711"}},
+                {"kind": "subflow", "name": "call_child", "subflow": str(child_path)},
+                {"kind": "uds", "name": "should_not_run", "request": "2711", "expect": {"response_prefix": "6711"}},
             ],
         )
         engine.register(flow)
@@ -1388,8 +1428,9 @@ def test_sub_flow_stop_signal_propagation(tmp_path: Path) -> None:
         child_path.write_text(
             "name: child_flow\n"
             "steps:\n"
-            "  - name: child_step1\n"
-            '    send: "2711"\n'
+            "  - kind: uds\n"
+            "    name: child_step1\n"
+            '    request: "2711"\n'
             "    expect:\n"
             '      response_prefix: "6711"\n',
             encoding="utf-8",
@@ -1398,10 +1439,11 @@ def test_sub_flow_stop_signal_propagation(tmp_path: Path) -> None:
         flow = FlowDefinition(
             name="parent_flow",
             steps=[
-                {"name": "call_child", "sub_flow": str(child_path), "delay_ms": 500},
+                {"kind": "subflow", "name": "call_child", "subflow": str(child_path), "delay_ms": 500},
                 {
+                    "kind": "uds",
                     "name": "should_not_run",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
             ],
@@ -1434,8 +1476,9 @@ def test_repeat_one_backward_compatible() -> None:
             name="repeat_one_flow",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "step_repeat_1",
-                    "send": "2711",
+                    "request": "2711",
                     "repeat": 1,
                     "expect": {"response_prefix": "6711"},
                 },
@@ -1467,8 +1510,9 @@ def test_repeat_n_normal_execution() -> None:
             name="repeat_n_flow",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "repeated_step",
-                    "send": "2711",
+                    "request": "2711",
                     "repeat": 3,
                     "expect": {"response_prefix": "6711"},
                 },
@@ -1502,8 +1546,9 @@ def test_repeat_failure_fast_exit() -> None:
             name="repeat_fail_flow",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "will_fail",
-                    "send": "2711",
+                    "request": "2711",
                     "repeat": 5,
                     "expect": {"response_prefix": "FFFF"},
                 },
@@ -1535,13 +1580,13 @@ def test_sub_flow_plus_repeat_combination(tmp_path: Path) -> None:
         _write_sub_flow_yaml(
             child_path,
             "child_flow",
-            '  - name: child_step\n    send: "2711"\n    expect:\n      response_prefix: "6711"\n',
+            '  - kind: uds\n    name: child_step\n    request: "2711"\n    expect:\n      response_prefix: "6711"\n',
         )
 
         flow = FlowDefinition(
             name="parent_flow",
             steps=[
-                {"name": "call_child", "sub_flow": str(child_path), "repeat": 2},
+                {"kind": "subflow", "name": "call_child", "subflow": str(child_path), "repeat": 2},
             ],
         )
         engine.register(flow)
@@ -1585,8 +1630,9 @@ def test_addressing_mode_inherit_uses_flow_default() -> None:
             default_addressing_mode="functional",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "inherit_step",
-                    "send": "2711",
+                    "request": "2711",
                     "expect": {"response_prefix": "6711"},
                 },
             ],
@@ -1630,8 +1676,9 @@ def test_addressing_mode_explicit_overrides_flow_default() -> None:
             default_addressing_mode="functional",
             steps=[
                 {
+                    "kind": "uds",
                     "name": "physical_step",
-                    "send": "2711",
+                    "request": "2711",
                     "addressing_mode": "physical",
                     "expect": {"response_prefix": "6711"},
                 },
@@ -1676,8 +1723,9 @@ def test_sub_flow_addressing_mode_inherit_uses_sub_flow_default(tmp_path: Path) 
             "name: child_flow\n"
             "default_addressing_mode: functional\n"
             "steps:\n"
-            "  - name: child_step\n"
-            '    send: "2711"\n'
+            "  - kind: uds\n"
+            "    name: child_step\n"
+            '    request: "2711"\n'
             "    expect:\n"
             '      response_prefix: "6711"\n',
             encoding="utf-8",
@@ -1687,8 +1735,8 @@ def test_sub_flow_addressing_mode_inherit_uses_sub_flow_default(tmp_path: Path) 
             name="parent_flow",
             default_addressing_mode="physical",
             steps=[
-                {"name": "parent_step", "send": "2711", "expect": {"response_prefix": "6711"}},
-                {"name": "call_child", "sub_flow": str(child_path)},
+                {"kind": "uds", "name": "parent_step", "request": "2711", "expect": {"response_prefix": "6711"}},
+                {"kind": "subflow", "name": "call_child", "subflow": str(child_path)},
             ],
         )
         engine.register(flow)
@@ -1721,7 +1769,7 @@ def test_nesting_depth_limit_exceeded(tmp_path: Path) -> None:
         _write_sub_flow_yaml(
             paths[11],
             "level_11",
-            '  - name: deep_step\n    send: "2711"\n    expect:\n      response_prefix: "6711"\n',
+            '  - kind: uds\n    name: deep_step\n    request: "2711"\n    expect:\n      response_prefix: "6711"\n',
         )
 
         # Each intermediate flow calls the next level
@@ -1730,13 +1778,13 @@ def test_nesting_depth_limit_exceeded(tmp_path: Path) -> None:
             _write_sub_flow_yaml(
                 paths[i],
                 f"level_{i}",
-                f"  - name: level_{i}_step\n    sub_flow: {next_posix}\n",
+                f"  - kind: subflow\n    name: level_{i}_step\n    subflow: {next_posix}\n",
             )
 
         flow = FlowDefinition(
             name="parent_flow",
             steps=[
-                {"name": "call_deep", "sub_flow": str(paths[0])},
+                {"kind": "subflow", "name": "call_deep", "subflow": str(paths[0])},
             ],
         )
         engine.register(flow)
