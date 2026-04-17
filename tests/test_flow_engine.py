@@ -15,6 +15,7 @@ from uds_mcp.models.events import EventKind
 class _FakeUdsClient:
     def __init__(self) -> None:
         self.tp_events: list[tuple[str, str]] = []
+        self.tp_start_calls: list[tuple[str, str]] = []
         self.no_response_requests: list[str] = []
         self.sent_can_frames: list[dict[str, object]] = []
         self.call_log: list[tuple[str, str]] = []
@@ -73,6 +74,7 @@ class _FakeUdsClient:
         self, owner: str, *, addressing_mode: str = "physical"
     ) -> dict[str, object]:
         self.tp_events.append(("start", owner))
+        self.tp_start_calls.append((owner, addressing_mode))
         return {
             "running": True,
             "addressing_mode": addressing_mode,
@@ -567,6 +569,114 @@ def test_wait_only_step_runs_and_records_trace() -> None:
         assert trace[0]["action"] == "wait"
         assert trace[0]["delay_ms"] == 120
         assert trace[1]["step"] == "read_after_wait"
+
+    asyncio.run(_run())
+
+
+def test_tester_present_step_on_uses_step_addressing_mode_and_suspends_flow_owner() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="tp_step_mode_flow",
+            tester_present_policy="during_flow",
+            tester_present_addressing_mode="physical",
+            default_addressing_mode="physical",
+            steps=[
+                {
+                    "name": "functional_tp_step",
+                    "send": "2711",
+                    "tester_present": "on",
+                    # Request mode stays physical; only TP goes functional.
+                    "tester_present_addressing_mode": "functional",
+                    "expect": {"response_prefix": "6711"},
+                },
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert uds.tp_events == [
+            ("start", "flow-run"),
+            ("stop", "flow-run"),
+            ("start", "flow-step"),
+            ("stop", "flow-step"),
+            ("start", "flow-run"),
+            ("stop", "flow-run"),
+        ]
+        assert uds.tp_start_calls == [
+            ("flow-run", "physical"),
+            ("flow-step", "functional"),
+            ("flow-run", "physical"),
+        ]
+
+    asyncio.run(_run())
+
+
+def test_tester_present_flow_default_addressing_mode_functional() -> None:
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="tp_flow_mode_flow",
+            tester_present_policy="during_flow",
+            tester_present_addressing_mode="functional",
+            default_addressing_mode="physical",
+            steps=[
+                {
+                    "name": "step1",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        # Request mode stays physical; TP uses flow-level functional.
+        assert uds.tp_start_calls == [("flow-run", "functional")]
+
+    asyncio.run(_run())
+
+
+def test_tester_present_addressing_mode_independent_from_request_mode() -> None:
+    """Requests are functional while TP stays physical (independent controls)."""
+
+    async def _run() -> None:
+        uds = _FakeUdsClient()
+        runtime = ExtensionRuntime([Path("examples/extensions").resolve()])
+        engine = FlowEngine(uds, EventStore(), runtime)
+
+        flow = FlowDefinition(
+            name="decoupled_mode_flow",
+            tester_present_policy="during_flow",
+            tester_present_addressing_mode="physical",
+            default_addressing_mode="functional",
+            steps=[
+                {
+                    "name": "step1",
+                    "send": "2711",
+                    "expect": {"response_prefix": "6711"},
+                }
+            ],
+        )
+
+        engine.register(flow)
+        run_id = await engine.start(flow.name)
+        final = await _wait_run_done(engine, run_id)
+
+        assert final["status"] == FlowStatus.DONE.value
+        assert uds.tp_start_calls == [("flow-run", "physical")]
 
     asyncio.run(_run())
 

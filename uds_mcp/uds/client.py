@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
-from threading import Event, Lock, Thread
+from threading import Condition, Lock, Thread
 from typing import TYPE_CHECKING, Literal
 
 from uds.addressing import AddressingType
@@ -52,6 +53,163 @@ class UdsConfig:
                 raise ValueError("min_dlc > 8 requires CAN FD")
 
 
+class _TesterPresentController:
+    """Periodic 0x3E TesterPresent sender with owner-counted activation.
+
+    Cadence is anchored to the monotonic time of the last actual frame sent,
+    not to owner acquire/release boundaries. A brief owner drop (e.g. a flow
+    step with ``tester_present: off`` followed by an ``on`` step) will not
+    reset the timer: the next send still fires at ``last_send + interval``.
+
+    The worker thread is lazily created on the first acquire and reused for
+    the controller's lifetime, pausing on a Condition when the owner set is
+    empty. Only :meth:`shutdown` tears down the thread and clears the cadence
+    anchor.
+    """
+
+    def __init__(
+        self,
+        *,
+        can: CanInterface,
+        event_store: EventStore,
+        tx_id_physical: int,
+        tx_id_functional: int,
+        interval_sec: float,
+    ) -> None:
+        self._can = can
+        self._event_store = event_store
+        self._tx_id_physical = tx_id_physical
+        self._tx_id_functional = tx_id_functional
+        self._interval_sec = max(interval_sec, 0.05)
+
+        self._cond = Condition(Lock())
+        self._owners: set[str] = set()
+        self._mode: AddressingType | None = None
+        self._thread: Thread | None = None
+        self._shutdown = False
+        self._last_send_monotonic: float | None = None
+
+    # ---- public API (invoked via asyncio.to_thread) ----
+
+    def acquire(self, owner: str, addressing_mode: str) -> dict[str, object]:
+        requested = _parse_addressing_mode(addressing_mode)
+        with self._cond:
+            was_idle = not self._owners
+            self._owners.add(owner)
+            if was_idle:
+                # Reactivating from idle — the first reacquiring owner sets
+                # the addressing mode for this active period.
+                self._mode = requested
+                self._ensure_worker_locked()
+            self._cond.notify_all()
+            return self._status_payload_locked()
+
+    def release(self, owner: str) -> dict[str, object]:
+        with self._cond:
+            self._owners.discard(owner)
+            if not self._owners:
+                self._mode = None
+            self._cond.notify_all()
+            return self._status_payload_locked()
+
+    def status(self) -> dict[str, object]:
+        with self._cond:
+            return self._status_payload_locked()
+
+    def shutdown(self) -> None:
+        """Tear down the worker and reset the global cadence anchor."""
+        with self._cond:
+            self._shutdown = True
+            self._owners.clear()
+            self._mode = None
+            self._last_send_monotonic = None
+            thread = self._thread
+            self._thread = None
+            self._cond.notify_all()
+        if thread is not None:
+            thread.join(timeout=1.0)
+
+    # ---- internals ----
+
+    def _status_payload_locked(self) -> dict[str, object]:
+        mode_label: str | None = None
+        if self._mode is not None:
+            mode_label = (
+                "functional" if self._mode == AddressingType.FUNCTIONAL else "physical"
+            )
+        return {
+            "running": bool(self._owners),
+            "addressing_mode": mode_label,
+            "owners": sorted(self._owners),
+            "interval_sec": self._interval_sec,
+        }
+
+    def _ensure_worker_locked(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._shutdown = False
+        thread = Thread(
+            target=self._run,
+            name="uds-mcp-tester-present",
+            daemon=True,
+        )
+        self._thread = thread
+        thread.start()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                # Pause while idle.
+                while not self._shutdown and not self._owners:
+                    self._cond.wait()
+                if self._shutdown:
+                    return
+
+                # Compute an absolute deadline for the next send so that
+                # spurious wakeups (owner add/remove) don't reset the wait.
+                if self._last_send_monotonic is None:
+                    deadline = time.monotonic() + self._interval_sec
+                else:
+                    deadline = self._last_send_monotonic + self._interval_sec
+
+                while not self._shutdown and self._owners:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.0:
+                        break
+                    self._cond.wait(timeout=remaining)
+
+                if self._shutdown:
+                    return
+                if not self._owners:
+                    # Became idle during the wait — loop back and pause.
+                    continue
+
+                mode = self._mode or AddressingType.PHYSICAL
+                arbitration_id = (
+                    self._tx_id_functional
+                    if mode == AddressingType.FUNCTIONAL
+                    else self._tx_id_physical
+                )
+
+            # Send outside the lock.
+            try:
+                self._can.send_frame(arbitration_id, b"\x3e\x80")
+            except Exception as exc:
+                self._event_store.append(
+                    LogEvent(
+                        kind=EventKind.ERROR,
+                        payload={
+                            "source": "uds_client",
+                            "error": f"tester_present send failed: {exc}",
+                        },
+                    )
+                )
+
+            # Advance the cadence anchor even on failure to avoid a hot-loop.
+            with self._cond:
+                self._last_send_monotonic = time.monotonic()
+
+
 class UdsClientService:
     """UDS client service built on full py-uds transport/session stack."""
 
@@ -90,10 +248,13 @@ class UdsClientService:
             **transport_kwargs,
         )
         self._client = Client(transport_interface=self._transport)
-        self._tester_present_owners: set[str] = set()
-        self._tester_present_mode: AddressingType | None = None
-        self._tester_present_stop_event: Event | None = None
-        self._tester_present_thread: Thread | None = None
+        self._tester_present = _TesterPresentController(
+            can=self._can,
+            event_store=self._event_store,
+            tx_id_physical=self._config.tx_id,
+            tx_id_functional=self._config.tx_functional_id,
+            interval_sec=self._config.tester_present_interval_sec,
+        )
 
     async def send(
         self,
@@ -117,22 +278,16 @@ class UdsClientService:
     async def send_can_frames(self, frames: list[dict[str, object]]) -> dict[str, object]:
         return await asyncio.to_thread(self._send_can_frames_sync, frames)
 
-    async def ensure_tester_present(self) -> None:
-        await self.start_tester_present_owner("flow-breakpoint", addressing_mode="physical")
-
-    async def stop_tester_present(self) -> None:
-        await self.stop_tester_present_owner("flow-breakpoint")
-
     async def start_tester_present_owner(
         self,
         owner: str,
         *,
         addressing_mode: Literal["physical", "functional"] = "physical",
     ) -> dict[str, object]:
-        return await asyncio.to_thread(self._acquire_tester_present_sync, owner, addressing_mode)
+        return await asyncio.to_thread(self._tester_present.acquire, owner, addressing_mode)
 
     async def stop_tester_present_owner(self, owner: str) -> dict[str, object]:
-        return await asyncio.to_thread(self._release_tester_present_sync, owner)
+        return await asyncio.to_thread(self._tester_present.release, owner)
 
     async def start_manual_tester_present(
         self,
@@ -145,21 +300,14 @@ class UdsClientService:
         return await self.stop_tester_present_owner("manual")
 
     async def tester_present_status(self) -> dict[str, object]:
-        return await asyncio.to_thread(self._tester_present_status_sync)
+        return await asyncio.to_thread(self._tester_present.status)
 
     def close(self) -> None:
-        thread_to_join: Thread | None = None
+        self._tester_present.shutdown()
         with self._client_lock:
-            thread_to_join = self._stop_tester_present_worker_locked()
-            self._tester_present_mode = None
-            self._tester_present_owners.clear()
-
             notifier = getattr(self._transport, "notifier", None)
             if notifier is not None and hasattr(notifier, "stop"):
                 notifier.stop()
-
-        if thread_to_join is not None:
-            thread_to_join.join(timeout=1.0)
 
     def _send_sync(
         self, payload: bytes, timeout_ms: int, addressing_mode: str
@@ -301,105 +449,6 @@ class UdsClientService:
                     },
                 )
             )
-
-    def _acquire_tester_present_sync(self, owner: str, addressing_mode: str) -> dict[str, object]:
-        requested = _parse_addressing_mode(addressing_mode)
-        with self._client_lock:
-            self._tester_present_owners.add(owner)
-
-            if self._tester_present_thread is not None:
-                active_mode = self._tester_present_mode or AddressingType.PHYSICAL
-                return self._tester_present_status_payload(active_mode)
-
-            self._start_tester_present_worker_locked(requested)
-            self._tester_present_mode = requested
-            return self._tester_present_status_payload(requested)
-
-    def _release_tester_present_sync(self, owner: str) -> dict[str, object]:
-        with self._client_lock:
-            self._tester_present_owners.discard(owner)
-
-            if self._tester_present_owners:
-                active_mode = self._tester_present_mode or AddressingType.PHYSICAL
-                return self._tester_present_status_payload(active_mode)
-
-            thread_to_join = self._stop_tester_present_worker_locked()
-            self._tester_present_mode = None
-
-        if thread_to_join is not None:
-            thread_to_join.join(timeout=1.0)
-
-        with self._client_lock:
-            return self._tester_present_status_payload(None)
-
-    def _tester_present_status_sync(self) -> dict[str, object]:
-        with self._client_lock:
-            mode = self._tester_present_mode if self._tester_present_thread is not None else None
-            return self._tester_present_status_payload(mode)
-
-    def _tester_present_status_payload(self, mode: AddressingType | None) -> dict[str, object]:
-        mode_label = None
-        if mode is not None:
-            mode_label = "functional" if mode == AddressingType.FUNCTIONAL else "physical"
-        return {
-            "running": self._tester_present_thread is not None,
-            "addressing_mode": mode_label,
-            "owners": sorted(self._tester_present_owners),
-            "interval_sec": self._config.tester_present_interval_sec,
-        }
-
-    def _start_tester_present_worker_locked(self, mode: AddressingType) -> None:
-        interval_sec = max(self._config.tester_present_interval_sec, 0.05)
-        stop_event = Event()
-        thread = Thread(
-            target=self._tester_present_loop,
-            args=(stop_event, mode, interval_sec),
-            name="uds-mcp-tester-present",
-            daemon=True,
-        )
-        self._tester_present_stop_event = stop_event
-        self._tester_present_thread = thread
-        thread.start()
-
-    def _stop_tester_present_worker_locked(self) -> Thread | None:
-        thread = self._tester_present_thread
-        if thread is None:
-            self._tester_present_stop_event = None
-            return None
-        stop_event = self._tester_present_stop_event
-        self._tester_present_thread = None
-        self._tester_present_stop_event = None
-        if stop_event is not None:
-            stop_event.set()
-        return thread
-
-    def _tester_present_loop(
-        self,
-        stop_event: Event,
-        addressing_type: AddressingType,
-        interval_sec: float,
-    ) -> None:
-        arbitration_id = (
-            self._config.tx_functional_id
-            if addressing_type == AddressingType.FUNCTIONAL
-            else self._config.tx_id
-        )
-
-        while not stop_event.wait(interval_sec):
-            try:
-                # 0x80 suppresses positive response, so this is fire-and-forget.
-                self._can.send_frame(arbitration_id, b"\x3e\x80")
-            except Exception as exc:
-                self._event_store.append(
-                    LogEvent(
-                        kind=EventKind.ERROR,
-                        payload={
-                            "source": "uds_client",
-                            "error": f"tester_present send failed: {exc}",
-                        },
-                    )
-                )
-
 
 def _parse_addressing_mode(value: str) -> AddressingType:
     normalized = value.strip().lower()

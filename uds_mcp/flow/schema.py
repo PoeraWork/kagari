@@ -111,6 +111,7 @@ class FlowStep(BaseModel):
     expect: StepExpect | None = None
     breakpoint: bool = False
     tester_present: Literal["inherit", "on", "off"] = "inherit"
+    tester_present_addressing_mode: Literal["inherit", "physical", "functional"] = "inherit"
     addressing_mode: Literal["physical", "functional", "inherit"] = "inherit"
     transfer_data: TransferDataConfig | None = None
     before_hook: HookConfig | None = None
@@ -147,6 +148,7 @@ class FlowDefinition(BaseModel):
     version: str = "1.0"
     repeat: int = Field(default=1, ge=1)
     tester_present_policy: Literal["breakpoint_only", "during_flow", "off"] = "breakpoint_only"
+    tester_present_addressing_mode: Literal["physical", "functional"] = "physical"
     default_addressing_mode: Literal["physical", "functional"] = "physical"
     variables: dict[str, Any] = Field(default_factory=dict)
     steps: list[FlowStep]

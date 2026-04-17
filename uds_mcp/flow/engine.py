@@ -404,7 +404,9 @@ class FlowEngine:
         flow_owner_active = False
         try:
             if flow.tester_present_policy == "during_flow":
-                await self._uds_client.start_tester_present_owner("flow-run")
+                await self._uds_client.start_tester_present_owner(
+                    "flow-run", addressing_mode=flow.tester_present_addressing_mode
+                )
                 flow_owner_active = True
 
             for _ in range(flow.repeat):
@@ -559,9 +561,20 @@ class FlowEngine:
         flow_owner_suspended = False
 
         addressing_mode = _resolve_addressing_mode(step, flow)
+        tester_present_mode = _resolve_tester_present_addressing_mode(step, flow)
 
         if step.tester_present == "on":
-            await self._uds_client.start_tester_present_owner("flow-step")
+            # Step-level TP takes over: suspend any flow-run owner so the step's
+            # addressing mode is the one the controller actually uses (the
+            # controller keeps the mode of the current active period until all
+            # owners drop). Breakpoint TP (flow-breakpoint owner) is a separate
+            # owner added later and is unaffected by this suspension.
+            if flow_owner_active:
+                await self._uds_client.stop_tester_present_owner("flow-run")
+                flow_owner_suspended = True
+            await self._uds_client.start_tester_present_owner(
+                "flow-step", addressing_mode=tester_present_mode
+            )
             step_owner_active = True
         elif step.tester_present == "off" and flow_owner_active:
             await self._uds_client.stop_tester_present_owner("flow-run")
@@ -573,9 +586,12 @@ class FlowEngine:
                 run.status = FlowStatus.PAUSED
                 self._log_state(run)
                 run.pause_event.clear()
-                await self._uds_client.ensure_tester_present()
+                await self._uds_client.start_tester_present_owner(
+                    "flow-breakpoint",
+                    addressing_mode=flow.tester_present_addressing_mode,
+                )
                 await run.pause_event.wait()
-                await self._uds_client.stop_tester_present()
+                await self._uds_client.stop_tester_present_owner("flow-breakpoint")
                 run.status = FlowStatus.RUNNING
                 self._log_state(run)
 
@@ -837,7 +853,9 @@ class FlowEngine:
             if step_owner_active:
                 await self._uds_client.stop_tester_present_owner("flow-step")
             if flow_owner_suspended:
-                await self._uds_client.start_tester_present_owner("flow-run")
+                await self._uds_client.start_tester_present_owner(
+                    "flow-run", addressing_mode=flow.tester_present_addressing_mode
+                )
 
     def _apply_before_hook(
         self,
@@ -1599,3 +1617,20 @@ def _resolve_addressing_mode(
     if step.addressing_mode != "inherit":
         return step.addressing_mode
     return flow.default_addressing_mode
+
+
+def _resolve_tester_present_addressing_mode(
+    step: FlowStep,
+    flow: FlowDefinition,
+) -> Literal["physical", "functional"]:
+    """Resolve the effective TesterPresent addressing mode for a step.
+
+    TP addressing mode is controlled independently from the request
+    addressing mode (``step.addressing_mode`` / ``flow.default_addressing_mode``):
+    callers sometimes want requests sent functionally while TP stays physical,
+    or vice versa. When the step's ``tester_present_addressing_mode`` is
+    "inherit", fall back to the flow-level ``tester_present_addressing_mode``.
+    """
+    if step.tester_present_addressing_mode != "inherit":
+        return step.tester_present_addressing_mode
+    return flow.tester_present_addressing_mode
