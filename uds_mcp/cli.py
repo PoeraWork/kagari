@@ -25,6 +25,7 @@ from uds_mcp.flow.report import (
     write_json_report,
     write_junit_report,
 )
+from uds_mcp.init import project_init
 from uds_mcp.logging.exporters.blf import BlfExporter
 from uds_mcp.logging.store import EventStore
 from uds_mcp.uds.client import UdsClientService, UdsConfig
@@ -40,6 +41,22 @@ _CONFIG_HELP = "Path to TOML config. Defaults to UDS_MCP_CONFIG_PATH or ./uds.to
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cli() -> None:
     """Direct CLI for uds-mcp runtime operations."""
+
+
+@cli.command("init")
+@click.option(
+    "--dir",
+    "target_dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=".",
+    show_default=True,
+    help="Target directory for generated files.",
+)
+@click.option("-f", "--force", is_flag=True, default=False, help="Overwrite existing files.")
+def init(target_dir: Path, *, force: bool) -> None:
+    """Initialize project: generate uds.toml and flow-schema.json."""
+    result = project_init(target_dir.resolve(), overwrite=force)
+    _print_json(result)
 
 
 @cli.command("config-show")
@@ -682,7 +699,7 @@ def _derive_case_diagnostics(status: dict[str, Any]) -> dict[str, Any]:
         "actual_prefix": actual_prefix,
         "last_request_hex": last_request_hex,
         "last_response_hex": last_response_hex,
-        "failed_step_trace": failed_trace if failed_trace else None,
+        "failed_step_trace": failed_trace or None,
         "assertions": assertions,
     }
 

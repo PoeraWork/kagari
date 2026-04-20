@@ -14,6 +14,7 @@ from uds_mcp.extensions.runtime import ExtensionRuntime
 from uds_mcp.flow.engine import FlowEngine
 from uds_mcp.flow.schema import FlowDefinition, SubflowStep
 from uds_mcp.flow.templates import init_flow_template, list_flow_presets
+from uds_mcp.init import project_init as _project_init
 from uds_mcp.logging.exporters.blf import BlfExporter
 from uds_mcp.logging.store import EventStore
 from uds_mcp.models.events import EventKind
@@ -528,6 +529,21 @@ def build_server(config: AppConfig, *, config_source: str = "startup") -> FastMC
         return [
             item.to_dict() for item in state.event_store.query(start=start, end=end, limit=limit)
         ]
+
+    @mcp.tool(description="Initialize project: generate uds.toml and flow JSON Schema file.")
+    def project_init(
+        target_dir: str = ".",
+        *,
+        overwrite: bool = False,
+        schema_only: bool = False,
+        config_only: bool = False,
+    ) -> dict[str, object]:
+        return _project_init(
+            Path(target_dir).resolve(),
+            overwrite=overwrite,
+            schema_only=schema_only,
+            config_only=config_only,
+        )
 
     @mcp.tool(description="Get current runtime configuration and source.")
     def config_get() -> dict[str, object]:
