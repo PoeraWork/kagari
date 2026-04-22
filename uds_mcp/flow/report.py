@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
+from string import Template
 from typing import Any
-from xml.etree import ElementTree
+from xml.etree import ElementTree as ET
+
+_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 
 @dataclass(slots=True)
@@ -88,6 +92,209 @@ def build_suite_report(
     )
 
 
+# ---------------------------------------------------------------------------
+# Diagnostics: extract structured failure info from engine status dict
+# ---------------------------------------------------------------------------
+
+
+def derive_case_diagnostics(status: dict[str, Any]) -> dict[str, Any]:
+    """Extract structured failure diagnostics from an engine status dict.
+
+    Prefers structured ``assertion_details`` when available, falling back to
+    regex parsing of the error string for backward compatibility.
+    """
+    error = str(status["error"]) if status.get("error") is not None else None
+    state = str(status.get("status") or "")
+
+    failed_trace_raw = status.get("failed_step_trace")
+    failed_trace = failed_trace_raw if isinstance(failed_trace_raw, list) else []
+    last_item: dict[str, Any] | None = None
+    for item in reversed(failed_trace):
+        if isinstance(item, dict):
+            last_item = item
+            break
+
+    failure_step = None
+    last_request_hex = None
+    last_response_hex = None
+    if last_item is not None:
+        failure_step = _safe_str(last_item.get("step"))
+        last_request_hex = _safe_str(last_item.get("request_hex"))
+        last_response_hex = _safe_str(last_item.get("response_hex"))
+
+    # --- try structured assertion_details first ---
+    expected_prefix = None
+    actual_prefix = None
+    assertion_details: list[dict[str, Any]] = status.get("assertion_details") or []
+    for ad in assertion_details:
+        if ad.get("ok"):
+            continue
+        detail = ad.get("detail") or {}
+        name = ad.get("name") or ""
+        if "response_prefix" in name and detail.get("expected") and detail.get("actual"):
+            expected_prefix = str(detail["expected"]).upper()
+            actual_prefix = str(detail["actual"]).upper()
+            if failure_step is None:
+                failure_step = _safe_str(ad.get("step"))
+            if last_request_hex is None:
+                last_request_hex = _safe_str(ad.get("request_hex"))
+            if last_response_hex is None:
+                last_response_hex = _safe_str(ad.get("response_hex"))
+            break
+
+    # --- fallback: regex parse error string ---
+    if expected_prefix is None and error is not None:
+        match = re.search(
+            r"expect (?:response_)?prefix\s+([0-9A-Fa-f]+),\s+got\s+([0-9A-Fa-f]+)", error
+        )
+        if match:
+            expected_prefix = match.group(1).upper()
+            actual_prefix = match.group(2).upper()
+
+    # --- build assertions list ---
+    assertions: list[dict[str, Any]] = []
+    if expected_prefix is not None or actual_prefix is not None:
+        assertions.append(
+            {
+                "name": "response_prefix",
+                "passed": False,
+                "expected": expected_prefix,
+                "actual": actual_prefix,
+                "message": error,
+            }
+        )
+    elif state == "TIMEOUT":
+        assertions.append(
+            {
+                "name": "flow_timeout",
+                "passed": False,
+                "expected": "flow completed before timeout",
+                "actual": "timeout reached",
+                "message": error,
+            }
+        )
+    elif state in {"FAILED", "STOPPED"}:
+        assertions.append(
+            {
+                "name": "flow_status",
+                "passed": False,
+                "expected": "DONE",
+                "actual": state,
+                "message": error,
+            }
+        )
+
+    failure_reason = None
+    if state == "DONE":
+        failure_reason = None
+    elif expected_prefix is not None and actual_prefix is not None:
+        failure_reason = (
+            f"response prefix mismatch: expected {expected_prefix}, got {actual_prefix}"
+        )
+    elif state == "TIMEOUT":
+        failure_reason = error or "flow timeout"
+    else:
+        failure_reason = error or f"flow ended with status {state}"
+
+    return {
+        "failure_reason": failure_reason,
+        "failure_step": failure_step or _safe_str(status.get("current_step")),
+        "expected_prefix": expected_prefix,
+        "actual_prefix": actual_prefix,
+        "last_request_hex": last_request_hex,
+        "last_response_hex": last_response_hex,
+        "failed_step_trace": failed_trace or None,
+        "assertions": assertions,
+    }
+
+
+def _safe_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+# ---------------------------------------------------------------------------
+# High-level report assembly
+# ---------------------------------------------------------------------------
+
+
+def assemble_suite_report(
+    *,
+    suite_name: str,
+    total: int,
+    status_list: list[dict[str, Any]],
+    started_at: datetime,
+    ended_at: datetime,
+) -> FlowSuiteReport:
+    """Build a ``FlowSuiteReport`` from a list of raw engine status dicts."""
+    cases: list[FlowCaseReport] = []
+    for status in status_list:
+        diagnostics = derive_case_diagnostics(status)
+        case_status = str(status["status"])
+        passed = case_status == "DONE"
+        cases.append(
+            FlowCaseReport(
+                flow_name=str(status.get("flow_name") or ""),
+                flow_path=str(status.get("flow_path") or ""),
+                run_id=str(status.get("run_id") or ""),
+                status=case_status,
+                passed=passed,
+                duration_ms=int(status.get("duration_ms") or 0),
+                step_count=int(status.get("step_count") or 0),
+                message_count=int(status.get("message_count") or 0),
+                error=(str(status["error"]) if status.get("error") is not None else None),
+                current_step=(
+                    str(status["current_step"])
+                    if status.get("current_step") is not None
+                    else None
+                ),
+                trace=status.get("trace") if isinstance(status.get("trace"), list) else None,
+                failure_reason=diagnostics["failure_reason"],
+                failure_step=diagnostics["failure_step"],
+                expected_prefix=diagnostics["expected_prefix"],
+                actual_prefix=diagnostics["actual_prefix"],
+                last_request_hex=diagnostics["last_request_hex"],
+                last_response_hex=diagnostics["last_response_hex"],
+                failed_step_trace=diagnostics["failed_step_trace"],
+                assertions=diagnostics["assertions"],
+            )
+        )
+    return build_suite_report(
+        suite_name=suite_name,
+        total=total,
+        cases=cases,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
+
+
+def write_reports(
+    report: FlowSuiteReport,
+    *,
+    json_path: Path | None = None,
+    html_path: Path | None = None,
+    junit_path: Path | None = None,
+) -> dict[str, str]:
+    """Write report to all requested formats and return a mapping of format→path."""
+    outputs: dict[str, str] = {}
+    if json_path is not None:
+        write_json_report(json_path, report)
+        outputs["json"] = json_path.as_posix()
+    if html_path is not None:
+        write_html_report(html_path, report)
+        outputs["html"] = html_path.as_posix()
+    if junit_path is not None:
+        write_junit_report(junit_path, report)
+        outputs["junit"] = junit_path.as_posix()
+    return outputs
+
+
+# ---------------------------------------------------------------------------
+# Individual report writers
+# ---------------------------------------------------------------------------
+
+
 def write_json_report(path: Path, report: FlowSuiteReport) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(report.to_dict(), ensure_ascii=True, indent=2)
@@ -96,7 +303,7 @@ def write_json_report(path: Path, report: FlowSuiteReport) -> None:
 
 def write_junit_report(path: Path, report: FlowSuiteReport) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    suite = ElementTree.Element(
+    suite = ET.Element(
         "testsuite",
         {
             "name": report.suite_name,
@@ -109,7 +316,7 @@ def write_junit_report(path: Path, report: FlowSuiteReport) -> None:
     )
 
     for case in report.cases:
-        testcase = ElementTree.SubElement(
+        testcase = ET.SubElement(
             suite,
             "testcase",
             {
@@ -118,49 +325,49 @@ def write_junit_report(path: Path, report: FlowSuiteReport) -> None:
                 "time": f"{case.duration_ms / 1000:.3f}",
             },
         )
-        properties = ElementTree.SubElement(testcase, "properties")
-        ElementTree.SubElement(
+        properties = ET.SubElement(testcase, "properties")
+        ET.SubElement(
             properties,
             "property",
             {"name": "flow_path", "value": case.flow_path},
         )
-        ElementTree.SubElement(
+        ET.SubElement(
             properties,
             "property",
             {"name": "run_id", "value": case.run_id},
         )
-        ElementTree.SubElement(
+        ET.SubElement(
             properties,
             "property",
             {"name": "status", "value": case.status},
         )
         if case.failure_reason is not None:
-            ElementTree.SubElement(
+            ET.SubElement(
                 properties,
                 "property",
                 {"name": "failure_reason", "value": case.failure_reason},
             )
         if case.failure_step is not None:
-            ElementTree.SubElement(
+            ET.SubElement(
                 properties,
                 "property",
                 {"name": "failure_step", "value": case.failure_step},
             )
         if case.expected_prefix is not None:
-            ElementTree.SubElement(
+            ET.SubElement(
                 properties,
                 "property",
                 {"name": "expected_prefix", "value": case.expected_prefix},
             )
         if case.actual_prefix is not None:
-            ElementTree.SubElement(
+            ET.SubElement(
                 properties,
                 "property",
                 {"name": "actual_prefix", "value": case.actual_prefix},
             )
 
         if not case.passed:
-            failure = ElementTree.SubElement(
+            failure = ET.SubElement(
                 testcase,
                 "failure",
                 {
@@ -185,7 +392,7 @@ def write_junit_report(path: Path, report: FlowSuiteReport) -> None:
                 lines.append("assertions=" + json.dumps(case.assertions, ensure_ascii=True))
             failure.text = "\n".join(lines)
 
-    xml_bytes = ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True)
+    xml_bytes = ET.tostring(suite, encoding="utf-8", xml_declaration=True)
     path.write_bytes(xml_bytes)
 
 
@@ -211,98 +418,18 @@ def write_html_report(path: Path, report: FlowSuiteReport) -> None:
             "</tr>"
         )
 
-        html = """<!doctype html>
-<html lang=\"en\">
-<head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <title>Flow Suite Report</title>
-  <style>
-    :root {
-      --bg: #f6f8fa;
-      --card: #ffffff;
-      --text: #0f172a;
-      --ok: #15803d;
-      --bad: #b91c1c;
-      --muted: #475569;
-      --border: #dbe3eb;
-    }
-    body {
-      margin: 0;
-      font-family: "Segoe UI", "Noto Sans", sans-serif;
-      background: linear-gradient(140deg, #eef4ff, var(--bg));
-      color: var(--text);
-    }
-    .wrap { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 18px;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-    }
-    h1 { margin: 0 0 8px; font-size: 22px; }
-    .muted { color: var(--muted); margin: 0 0 16px; }
-    .kpi {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-      margin-bottom: 18px;
-    }
-    .kpi div { border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 8px; vertical-align: top; }
-    th { background: #f8fbff; }
-    .ok { color: var(--ok); font-weight: 600; }
-    .bad { color: var(--bad); font-weight: 600; }
-  </style>
-</head>
-<body>
-  <div class=\"wrap\">
-    <div class=\"card\">
-      <h1>Flow Suite Report - __SUITE_NAME__</h1>
-      <p class=\"muted\">Generated at __GENERATED_AT__</p>
-      <div class=\"kpi\">
-        <div><strong>Total</strong><br/>__TOTAL__</div>
-        <div><strong>Executed</strong><br/>__EXECUTED__</div>
-        <div><strong>Passed</strong><br/>__PASSED__</div>
-        <div><strong>Failed</strong><br/>__FAILED__</div>
-        <div><strong>Skipped</strong><br/>__SKIPPED__</div>
-        <div><strong>Pass Rate</strong><br/>__PASS_RATE__%</div>
-        <div><strong>Duration</strong><br/>__DURATION_MS__ ms</div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Flow</th>
-            <th>Status</th>
-            <th>Result</th>
-            <th>Duration (ms)</th>
-            <th>Steps</th>
-            <th>Messages</th>
-            <th>Current Step</th>
-            <th>Error</th>
-          </tr>
-        </thead>
-        <tbody>
-          __ROWS__
-        </tbody>
-      </table>
-    </div>
-  </div>
-</body>
-</html>
-"""
-        html = (
-            html.replace("__SUITE_NAME__", escape(report.suite_name))
-            .replace("__GENERATED_AT__", escape(report.generated_at))
-            .replace("__TOTAL__", str(report.total))
-            .replace("__EXECUTED__", str(report.executed))
-            .replace("__PASSED__", str(report.passed))
-            .replace("__FAILED__", str(report.failed))
-            .replace("__SKIPPED__", str(report.skipped))
-            .replace("__PASS_RATE__", f"{report.pass_rate:.2f}")
-            .replace("__DURATION_MS__", str(report.duration_ms))
-            .replace("__ROWS__", "\n".join(rows))
-        )
-        path.write_text(html, encoding="utf-8")
+    template_path = _TEMPLATE_DIR / "report.html"
+    template_text = template_path.read_text(encoding="utf-8")
+    html = Template(template_text).safe_substitute(
+        suite_name=escape(report.suite_name),
+        generated_at=escape(report.generated_at),
+        total=str(report.total),
+        executed=str(report.executed),
+        passed=str(report.passed),
+        failed=str(report.failed),
+        skipped=str(report.skipped),
+        pass_rate=f"{report.pass_rate:.2f}",
+        duration_ms=str(report.duration_ms),
+        rows="\n".join(rows),
+    )
+    path.write_text(html, encoding="utf-8")

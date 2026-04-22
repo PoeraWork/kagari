@@ -272,3 +272,48 @@ def test_status_message_count_equals_trace_length() -> None:
         assert result["message_count"] == 4
 
     asyncio.run(_run())
+
+
+def test_status_contains_assertion_details_on_success() -> None:
+    """DONE status includes assertion_details (empty for passing flow)."""
+
+    async def _run() -> None:
+        engine = _make_engine()
+        flow = FlowDefinition(
+            name="pass_flow",
+            steps=[{"kind": "uds", "name": "s1", "request": "2711", "expect": {"response_prefix": "6711"}}],
+        )
+        engine.register(flow)
+        run_id = await engine.start("pass_flow")
+        result = await _wait_done(engine, run_id)
+
+        assert result["status"] == FlowStatus.DONE.value
+        assert "assertion_details" in result
+        assert isinstance(result["assertion_details"], list)
+
+    asyncio.run(_run())
+
+
+def test_status_assertion_details_on_failure() -> None:
+    """FAILED status includes structured assertion_details with detail dict."""
+
+    async def _run() -> None:
+        engine = _make_engine()
+        flow = FlowDefinition(
+            name="fail_detail_flow",
+            steps=[{"kind": "uds", "name": "sa", "request": "2711", "expect": {"response_prefix": "FFFF"}}],
+        )
+        engine.register(flow)
+        run_id = await engine.start("fail_detail_flow")
+        result = await _wait_done(engine, run_id)
+
+        assert result["status"] == FlowStatus.FAILED.value
+        details = result["assertion_details"]
+        assert len(details) >= 1
+        failed = [d for d in details if not d["ok"]]
+        assert len(failed) >= 1
+        assert "detail" in failed[0]
+        assert "expected" in failed[0]["detail"]
+        assert "actual" in failed[0]["detail"]
+
+    asyncio.run(_run())

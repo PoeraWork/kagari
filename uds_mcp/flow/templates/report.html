@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flow Suite Report</title>
+  <style>
+    :root {
+      --bg: #f6f8fa;
+      --card: #ffffff;
+      --text: #0f172a;
+      --ok: #15803d;
+      --bad: #b91c1c;
+      --muted: #475569;
+      --border: #dbe3eb;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Noto Sans", sans-serif;
+      background: linear-gradient(140deg, #eef4ff, var(--bg));
+      color: var(--text);
+    }
+    .wrap { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    .muted { color: var(--muted); margin: 0 0 16px; }
+    .kpi {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .kpi div { border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 8px; vertical-align: top; }
+    th { background: #f8fbff; }
+    .ok { color: var(--ok); font-weight: 600; }
+    .bad { color: var(--bad); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Flow Suite Report - $suite_name</h1>
+      <p class="muted">Generated at $generated_at</p>
+      <div class="kpi">
+        <div><strong>Total</strong><br/>$total</div>
+        <div><strong>Executed</strong><br/>$executed</div>
+        <div><strong>Passed</strong><br/>$passed</div>
+        <div><strong>Failed</strong><br/>$failed</div>
+        <div><strong>Skipped</strong><br/>$skipped</div>
+        <div><strong>Pass Rate</strong><br/>$pass_rate%</div>
+        <div><strong>Duration</strong><br/>$duration_ms ms</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Flow</th>
+            <th>Status</th>
+            <th>Result</th>
+            <th>Duration (ms)</th>
+            <th>Steps</th>
+            <th>Messages</th>
+            <th>Current Step</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>
+          $rows
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>

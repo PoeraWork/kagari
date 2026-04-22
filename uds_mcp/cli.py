@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import glob
 import json
-import re
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -21,9 +20,8 @@ from uds_mcp.flow.report import (
     FlowCaseReport,
     FlowSuiteReport,
     build_suite_report,
-    write_html_report,
-    write_json_report,
-    write_junit_report,
+    derive_case_diagnostics,
+    write_reports,
 )
 from uds_mcp.init import project_init
 from uds_mcp.logging.exporters.blf import BlfExporter
@@ -303,16 +301,12 @@ def flow_suite(
             )
         )
 
-        write_json_report(report_json, result)
-        outputs: dict[str, str] = {"json": report_json.as_posix()}
-
-        if report_html is not None:
-            write_html_report(report_html, result)
-            outputs["html"] = report_html.as_posix()
-
-        if report_junit is not None:
-            write_junit_report(report_junit, result)
-            outputs["junit"] = report_junit.as_posix()
+        outputs = write_reports(
+            result,
+            json_path=report_json,
+            html_path=report_html,
+            junit_path=report_junit,
+        )
 
         _print_json(
             {
@@ -449,7 +443,7 @@ async def _run_flow_suite(
         case_ended = datetime.now(UTC)
         case_status = str(status["status"])
         passed = case_status == FlowStatus.DONE.value
-        diagnostics = _derive_case_diagnostics(status)
+        diagnostics = derive_case_diagnostics(status)
         cases.append(
             FlowCaseReport(
                 flow_name=str(status.get("flow_name") or path.stem),
@@ -618,96 +612,6 @@ def _discover_flow_paths(
 
 def _has_glob_meta(value: str) -> bool:
     return any(token in value for token in ("*", "?", "[", "]"))
-
-
-def _derive_case_diagnostics(status: dict[str, Any]) -> dict[str, Any]:
-    error = str(status["error"]) if status.get("error") is not None else None
-    state = str(status.get("status") or "")
-
-    failed_trace_raw = status.get("failed_step_trace")
-    failed_trace = failed_trace_raw if isinstance(failed_trace_raw, list) else []
-    last_item: dict[str, Any] | None = None
-    for item in reversed(failed_trace):
-        if isinstance(item, dict):
-            last_item = item
-            break
-
-    failure_step = None
-    last_request_hex = None
-    last_response_hex = None
-    if last_item is not None:
-        failure_step = _safe_str(last_item.get("step"))
-        last_request_hex = _safe_str(last_item.get("request_hex"))
-        last_response_hex = _safe_str(last_item.get("response_hex"))
-
-    expected_prefix = None
-    actual_prefix = None
-    if error is not None:
-        match = re.search(r"expect prefix\s+([0-9A-Fa-f]+),\s+got\s+([0-9A-Fa-f]+)", error)
-        if match:
-            expected_prefix = match.group(1).upper()
-            actual_prefix = match.group(2).upper()
-
-    assertions: list[dict[str, Any]] = []
-    if expected_prefix is not None or actual_prefix is not None:
-        assertions.append(
-            {
-                "name": "response_prefix",
-                "passed": False,
-                "expected": expected_prefix,
-                "actual": actual_prefix,
-                "message": error,
-            }
-        )
-    elif state == "TIMEOUT":
-        assertions.append(
-            {
-                "name": "flow_timeout",
-                "passed": False,
-                "expected": "flow completed before timeout",
-                "actual": "timeout reached",
-                "message": error,
-            }
-        )
-    elif state in {"FAILED", "STOPPED"}:
-        assertions.append(
-            {
-                "name": "flow_status",
-                "passed": False,
-                "expected": "DONE",
-                "actual": state,
-                "message": error,
-            }
-        )
-
-    failure_reason = None
-    if state == "DONE":
-        failure_reason = None
-    elif expected_prefix is not None and actual_prefix is not None:
-        failure_reason = (
-            f"response prefix mismatch: expected {expected_prefix}, got {actual_prefix}"
-        )
-    elif state == "TIMEOUT":
-        failure_reason = error or "flow timeout"
-    else:
-        failure_reason = error or f"flow ended with status {state}"
-
-    return {
-        "failure_reason": failure_reason,
-        "failure_step": failure_step or _safe_str(status.get("current_step")),
-        "expected_prefix": expected_prefix,
-        "actual_prefix": actual_prefix,
-        "last_request_hex": last_request_hex,
-        "last_response_hex": last_response_hex,
-        "failed_step_trace": failed_trace or None,
-        "assertions": assertions,
-    }
-
-
-def _safe_str(value: object) -> str | None:
-    if value is None:
-        return None
-    return str(value)
 
 
 def _parse_int(value: str) -> int:

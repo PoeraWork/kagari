@@ -57,12 +57,15 @@ class FlowRun:
     current_step: str | None = None
     error: str | None = None
     trace: list[dict[str, Any]] = field(default_factory=list)
+    assertion_details: list[dict[str, Any]] = field(default_factory=list)
     stop_requested: bool = False
     pause_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class FlowAssertionError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.detail: dict[str, Any] | None = detail
 
 
 class FlowAssertionFatalError(FlowAssertionError):
@@ -327,6 +330,7 @@ class FlowEngine:
             "error": run.error,
             "step_count": self._count_steps(run.trace),
             "message_count": len(run.trace),
+            "assertion_details": list(run.assertion_details),
         }
         if run.status == FlowStatus.FAILED:
             result["failed_step_trace"] = run.trace[-50:]
@@ -1543,6 +1547,7 @@ class FlowEngine:
                     on_fail=expect.response_on_fail,
                     name="expect.response_prefix",
                     message=f"expect response_prefix {expected}, got {normalized}",
+                    detail={"expected": expected, "actual": normalized},
                 )
             ]
 
@@ -1558,6 +1563,7 @@ class FlowEngine:
                     on_fail=expect.response_on_fail,
                     name="expect.response_equals",
                     message=f"expect response_equals {expected}, got {normalized}",
+                    detail={"expected": expected, "actual": normalized},
                 )
             ]
 
@@ -1582,6 +1588,7 @@ class FlowEngine:
                     on_fail=expect.response_on_fail,
                     name="expect.response_regex",
                     message=f"expect response_regex {pattern!r}, got {normalized}",
+                    detail={"expected": pattern, "actual": normalized},
                 )
             ]
 
@@ -1598,6 +1605,19 @@ class FlowEngine:
         response_hex: str | None = None,
     ) -> None:
         for result in results:
+            detail_record: dict[str, Any] = {
+                "step": step.name,
+                "phase": phase,
+                "name": result.name,
+                "on_fail": result.on_fail,
+                "ok": result.ok,
+                "message": result.message,
+                "request_hex": request_hex,
+                "response_hex": response_hex,
+                "detail": result.detail,
+            }
+            run.assertion_details.append(detail_record)
+
             if result.ok:
                 continue
 
@@ -1620,10 +1640,12 @@ class FlowEngine:
                 continue
             if result.on_fail == "fatal":
                 raise FlowAssertionFatalError(
-                    f"step {step.name} [{phase}] fatal assertion failed: {result.message}"
+                    f"step {step.name} [{phase}] fatal assertion failed: {result.message}",
+                    detail=result.detail,
                 )
             raise FlowAssertionError(
-                f"step {step.name} [{phase}] assertion failed: {result.message}"
+                f"step {step.name} [{phase}] assertion failed: {result.message}",
+                detail=result.detail,
             )
 
 
