@@ -310,13 +310,15 @@ class FlowEngine:
     def set_runtime(self, runtime: ExtensionRuntime) -> None:
         self._runtime = runtime
 
-    async def start(self, flow_name: str) -> str:
+    async def start(self, flow_name: str, *, variables: dict[str, Any] | None = None) -> str:
         flow = self._flows[flow_name]
         run_id = uuid.uuid4().hex
         run = FlowRun(run_id=run_id, flow_name=flow_name)
         run.pause_event.set()
         self._runs[run_id] = run
-        self._tasks[run_id] = asyncio.create_task(self._run_flow(run, flow))
+        self._tasks[run_id] = asyncio.create_task(
+            self._run_flow(run, flow, extra_variables=variables)
+        )
         self._log_state(run)
         return run_id
 
@@ -414,10 +416,19 @@ class FlowEngine:
             await asyncio.sleep(sleep_sec)
             remaining_sec -= sleep_sec
 
-    async def _run_flow(self, run: FlowRun, flow: FlowDefinition) -> None:
+    async def _run_flow(
+        self,
+        run: FlowRun,
+        flow: FlowDefinition,
+        *,
+        extra_variables: dict[str, Any] | None = None,
+    ) -> None:
         flow_path = self._flow_sources.get(flow.name)
         flow_dir = flow_path.parent if flow_path is not None else Path.cwd().resolve()
-        variables = _resolve_flow_variables(flow.variables, flow_dir=flow_dir)
+        merged = dict(flow.variables)
+        if extra_variables:
+            merged.update(extra_variables)
+        variables = _resolve_flow_variables(merged, flow_dir=flow_dir)
         flow_owner_active = False
         try:
             if flow.tester_present_policy == "during_flow":

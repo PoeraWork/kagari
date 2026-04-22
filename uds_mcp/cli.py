@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import json
 from datetime import UTC, datetime
-from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
-import yaml
+
+if TYPE_CHECKING:
+    from uds_mcp.flow.suite import ResolvedCase
 
 from uds_mcp.can.config import CanConfig
 from uds_mcp.can.interface import CanInterface
@@ -260,6 +260,13 @@ def flow_run(
     default=False,
     help="Store detailed trace in case records.",
 )
+@click.option(
+    "--tag",
+    "tags",
+    multiple=True,
+    type=str,
+    help="Only run cases matching these tags (repeatable). Requires suite with cases.",
+)
 def flow_suite(
     config_path: Path | None,
     suite: Path | None,
@@ -274,6 +281,7 @@ def flow_suite(
     report_html: Path | None,
     report_junit: Path | None,
     verbose: bool,
+    tags: tuple[str, ...],
 ) -> None:
     config, _ = _load_and_prepare_config(config_path)
     merged_paths = list(paths)
@@ -286,6 +294,7 @@ def flow_suite(
         timeout_s=timeout_s,
         stop_on_fail=stop_on_fail,
         flow_repo=config.flow_repo,
+        tag_filter=list(tags) if tags else None,
     )
 
     app = _CliRuntime(config)
@@ -293,11 +302,13 @@ def flow_suite(
         result = asyncio.run(
             _run_flow_suite(
                 app.flow_engine,
-                suite_payload["flow_paths"],
+                suite_payload["resolved_cases"],
                 suite_name=suite_payload["suite_name"],
                 timeout_s=suite_payload["timeout_s"],
                 stop_on_fail=suite_payload["stop_on_fail"],
                 verbose=verbose,
+                setup_path=suite_payload.get("setup"),
+                teardown_path=suite_payload.get("teardown"),
             )
         )
 
@@ -370,6 +381,7 @@ async def _run_flow_once(
     blf_output: Path | None = None,
     verbose: bool = False,
     event_store: EventStore | None = None,
+    variables: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     blf_exporter: BlfExporter | None = None
     if blf_output is not None and event_store is not None:
@@ -379,7 +391,7 @@ async def _run_flow_once(
 
     try:
         flow = flow_engine.load(path)
-        run_id = await flow_engine.start(flow.name)
+        run_id = await flow_engine.start(flow.name, variables=variables)
         if not wait:
             return {"ok": True, "run_id": run_id, "status": "STARTED"}
 
@@ -421,61 +433,84 @@ async def _run_flow_once(
 
 async def _run_flow_suite(
     flow_engine: FlowEngine,
-    paths: list[Path],
+    resolved_cases: list[ResolvedCase],
     *,
     suite_name: str,
     timeout_s: float,
     stop_on_fail: bool,
     verbose: bool,
+    setup_path: Path | None = None,
+    teardown_path: Path | None = None,
 ) -> FlowSuiteReport:
     started_at = datetime.now(UTC)
     cases: list[FlowCaseReport] = []
 
-    for path in paths:
-        case_started = datetime.now(UTC)
-        status = await _run_flow_once(
-            flow_engine,
-            path,
-            wait=True,
-            timeout_s=timeout_s,
-            verbose=verbose,
-        )
-        case_ended = datetime.now(UTC)
-        case_status = str(status["status"])
-        passed = case_status == FlowStatus.DONE.value
-        diagnostics = derive_case_diagnostics(status)
-        cases.append(
-            FlowCaseReport(
-                flow_name=str(status.get("flow_name") or path.stem),
-                flow_path=path.as_posix(),
-                run_id=str(status.get("run_id") or ""),
-                status=case_status,
-                passed=passed,
-                duration_ms=max(int((case_ended - case_started).total_seconds() * 1000), 0),
-                step_count=int(status.get("step_count") or 0),
-                message_count=int(status.get("message_count") or 0),
-                error=(str(status["error"]) if status.get("error") is not None else None),
-                current_step=(
-                    str(status["current_step"]) if status.get("current_step") is not None else None
-                ),
-                trace=(status.get("trace") if isinstance(status.get("trace"), list) else None),
-                failure_reason=diagnostics["failure_reason"],
-                failure_step=diagnostics["failure_step"],
-                expected_prefix=diagnostics["expected_prefix"],
-                actual_prefix=diagnostics["actual_prefix"],
-                last_request_hex=diagnostics["last_request_hex"],
-                last_response_hex=diagnostics["last_response_hex"],
-                failed_step_trace=diagnostics["failed_step_trace"],
-                assertions=diagnostics["assertions"],
+    if setup_path is not None:
+        await _run_flow_once(flow_engine, setup_path, wait=True, timeout_s=timeout_s)
+
+    try:
+        for rc in resolved_cases:
+            case_timeout = rc.timeout_s if rc.timeout_s is not None else timeout_s
+            max_attempts = rc.retry + 1
+            status: dict[str, Any] = {}
+            case_started = datetime.now(UTC)
+
+            for attempt in range(max_attempts):
+                status = await _run_flow_once(
+                    flow_engine,
+                    rc.flow_path,
+                    wait=True,
+                    timeout_s=case_timeout,
+                    verbose=verbose,
+                    variables=rc.variables or None,
+                )
+                case_status = str(status["status"])
+                if case_status == FlowStatus.DONE.value or attempt == max_attempts - 1:
+                    break
+
+            case_ended = datetime.now(UTC)
+            case_status = str(status["status"])
+            passed = case_status == FlowStatus.DONE.value
+            diagnostics = derive_case_diagnostics(status)
+            cases.append(
+                FlowCaseReport(
+                    flow_name=str(status.get("flow_name") or rc.flow_path.stem),
+                    flow_path=rc.flow_path.as_posix(),
+                    run_id=str(status.get("run_id") or ""),
+                    status=case_status,
+                    passed=passed,
+                    duration_ms=max(int((case_ended - case_started).total_seconds() * 1000), 0),
+                    step_count=int(status.get("step_count") or 0),
+                    message_count=int(status.get("message_count") or 0),
+                    error=(str(status["error"]) if status.get("error") is not None else None),
+                    current_step=(
+                        str(status["current_step"])
+                        if status.get("current_step") is not None
+                        else None
+                    ),
+                    trace=(
+                        status.get("trace") if isinstance(status.get("trace"), list) else None
+                    ),
+                    failure_reason=diagnostics["failure_reason"],
+                    failure_step=diagnostics["failure_step"],
+                    expected_prefix=diagnostics["expected_prefix"],
+                    actual_prefix=diagnostics["actual_prefix"],
+                    last_request_hex=diagnostics["last_request_hex"],
+                    last_response_hex=diagnostics["last_response_hex"],
+                    failed_step_trace=diagnostics["failed_step_trace"],
+                    assertions=diagnostics["assertions"],
+                )
             )
-        )
-        if stop_on_fail and not passed:
-            break
+            if stop_on_fail and not passed:
+                break
+    finally:
+        if teardown_path is not None:
+            await _run_flow_once(flow_engine, teardown_path, wait=True, timeout_s=timeout_s)
 
     ended_at = datetime.now(UTC)
     return build_suite_report(
         suite_name=suite_name,
-        total=len(paths),
+        total=len(resolved_cases),
         cases=cases,
         started_at=started_at,
         ended_at=ended_at,
@@ -491,127 +526,67 @@ def _resolve_flow_suite(
     timeout_s: float,
     stop_on_fail: bool,
     flow_repo: Path,
+    tag_filter: list[str] | None = None,
 ) -> dict[str, Any]:
-    include_specs: list[str] = list(paths)
-    include_specs.extend(globs)
-    exclude_patterns: list[str] = []
+    from uds_mcp.flow.suite import (  # noqa: PLC0415
+        SuiteDefinition,
+        load_suite,
+        resolve_suite,
+    )
+
+    suite_def: SuiteDefinition | None = None
+    base_dir = Path.cwd()
     resolved_suite_name = str(suite_name or "flow-suite")
     resolved_timeout_s = float(timeout_s)
     resolved_stop_on_fail = bool(stop_on_fail)
-    base_dir = Path.cwd()
+    setup_path: Path | None = None
+    teardown_path: Path | None = None
 
     if suite is not None:
-        suite_cfg = _load_suite_file(suite)
-        include_specs.extend(suite_cfg["include_specs"])
-        exclude_patterns.extend(suite_cfg["exclude_patterns"])
+        suite_def = load_suite(suite)
+        base_dir = suite.resolve().parent
         if suite_name is None:
-            resolved_suite_name = suite_cfg["suite_name"]
-        if timeout_s == 0.0 and suite_cfg["timeout_s"] is not None:
-            resolved_timeout_s = suite_cfg["timeout_s"]
+            resolved_suite_name = suite_def.name
+        if timeout_s == 0.0 and suite_def.timeout_s is not None:
+            resolved_timeout_s = suite_def.timeout_s
         if not stop_on_fail:
-            resolved_stop_on_fail = suite_cfg["stop_on_fail"]
-        base_dir = suite_cfg["base_dir"]
+            resolved_stop_on_fail = suite_def.stop_on_fail
 
-    if not include_specs:
-        include_specs.append(str(flow_repo / "*.yaml"))
+        if suite_def.setup is not None:
+            sp = Path(suite_def.setup)
+            setup_path = sp if sp.is_absolute() else (base_dir / sp).resolve()
+        if suite_def.teardown is not None:
+            tp = Path(suite_def.teardown)
+            teardown_path = tp if tp.is_absolute() else (base_dir / tp).resolve()
 
-    flow_paths = _discover_flow_paths(
-        include_specs,
-        exclude_patterns=exclude_patterns,
-        base_dir=base_dir,
-    )
-    if not flow_paths:
+    # Merge CLI include specs into suite definition
+    include_specs: list[str] = list(paths)
+    include_specs.extend(globs)
+
+    if suite_def is not None:
+        suite_def = suite_def.model_copy(
+            update={"include": list(suite_def.include) + include_specs}
+        )
+    else:
+        if not include_specs:
+            include_specs.append(str(flow_repo / "*.yaml"))
+        suite_def = SuiteDefinition(
+            name=resolved_suite_name,
+            include=include_specs,
+        )
+
+    resolved_cases = resolve_suite(suite_def, base_dir=base_dir, tag_filter=tag_filter)
+    if not resolved_cases:
         raise click.ClickException("no flow files discovered for suite execution")
 
     return {
         "suite_name": resolved_suite_name,
-        "flow_paths": flow_paths,
+        "resolved_cases": resolved_cases,
         "timeout_s": resolved_timeout_s,
         "stop_on_fail": resolved_stop_on_fail,
+        "setup": setup_path,
+        "teardown": teardown_path,
     }
-
-
-def _load_suite_file(path: Path) -> dict[str, Any]:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise TypeError("suite file must be a mapping")
-
-    include_raw = data.get("include", [])
-    if not isinstance(include_raw, list) or not all(isinstance(v, str) for v in include_raw):
-        raise TypeError("suite include must be an array of strings")
-
-    exclude_raw = data.get("exclude", [])
-    if not isinstance(exclude_raw, list) or not all(isinstance(v, str) for v in exclude_raw):
-        raise TypeError("suite exclude must be an array of strings")
-
-    name_raw = data.get("name", path.stem)
-    if not isinstance(name_raw, str):
-        raise TypeError("suite name must be a string")
-
-    timeout_raw = data.get("timeout_s")
-    timeout_s: float | None = None
-    if timeout_raw is not None:
-        if not isinstance(timeout_raw, int | float):
-            raise TypeError("suite timeout_s must be a number")
-        timeout_s = float(timeout_raw)
-
-    stop_on_fail_raw = data.get("stop_on_fail", False)
-    if not isinstance(stop_on_fail_raw, bool):
-        raise TypeError("suite stop_on_fail must be boolean")
-
-    return {
-        "suite_name": name_raw,
-        "include_specs": include_raw,
-        "exclude_patterns": exclude_raw,
-        "timeout_s": timeout_s,
-        "stop_on_fail": stop_on_fail_raw,
-        "base_dir": path.resolve().parent,
-    }
-
-
-def _discover_flow_paths(
-    include_specs: list[str],
-    *,
-    exclude_patterns: list[str],
-    base_dir: Path,
-) -> list[Path]:
-    discovered: set[Path] = set()
-    for spec in include_specs:
-        candidate = Path(spec)
-        if not candidate.is_absolute():
-            candidate = (base_dir / candidate).resolve()
-
-        if _has_glob_meta(spec):
-            pattern = str(candidate) if candidate.is_absolute() else spec
-            for matched in glob.glob(pattern, recursive=True):
-                found = Path(matched)
-                resolved = found.resolve()
-                if resolved.is_file() and resolved.suffix.lower() in {".yaml", ".yml"}:
-                    discovered.add(resolved)
-            continue
-
-        if candidate.is_dir():
-            for found in candidate.rglob("*.yaml"):
-                discovered.add(found.resolve())
-            for found in candidate.rglob("*.yml"):
-                discovered.add(found.resolve())
-            continue
-
-        if candidate.is_file() and candidate.suffix.lower() in {".yaml", ".yml"}:
-            discovered.add(candidate)
-
-    if not exclude_patterns:
-        return sorted(discovered)
-
-    return sorted(
-        item
-        for item in discovered
-        if not any(fnmatch(item.as_posix(), pattern) for pattern in exclude_patterns)
-    )
-
-
-def _has_glob_meta(value: str) -> bool:
-    return any(token in value for token in ("*", "?", "[", "]"))
 
 
 def _parse_int(value: str) -> int:

@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
-from uds_mcp.cli import _discover_flow_paths, _load_suite_file
 from uds_mcp.flow.report import (
     FlowCaseReport,
     assemble_suite_report,
@@ -17,6 +16,7 @@ from uds_mcp.flow.report import (
     write_junit_report,
     write_reports,
 )
+from uds_mcp.flow.suite import _discover_flow_paths, load_suite
 
 
 def test_build_suite_report_calculates_pass_rate_and_skipped() -> None:
@@ -249,14 +249,13 @@ def test_load_suite_file_parses_fields(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    loaded = _load_suite_file(suite_path)
+    loaded = load_suite(suite_path)
 
-    assert loaded["suite_name"] == "smoke"
-    assert loaded["include_specs"] == ["flows/*.yaml"]
-    assert loaded["exclude_patterns"] == ["*skip*"]
-    assert loaded["timeout_s"] == 2.5
-    assert loaded["stop_on_fail"] is True
-    assert loaded["base_dir"] == suite_path.resolve().parent
+    assert loaded.name == "smoke"
+    assert loaded.include == ["flows/*.yaml"]
+    assert loaded.exclude == ["*skip*"]
+    assert loaded.timeout_s == 2.5
+    assert loaded.stop_on_fail is True
 
 
 def test_write_html_report_uses_template(tmp_path: Path) -> None:
